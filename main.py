@@ -1,23 +1,67 @@
-__version__ = "0.1.0"
+__version__ = "1.2.1"
+# Pocket Pal v1.2 (chat screen, voice, talk back, memory, local-first router)
 
 import os
-import sqlite3
+import re
 import json
+import time
+import sqlite3
 import threading
+import traceback
 import urllib.request
 from datetime import datetime
+from urllib.parse import quote
 
 from kivy.app import App
+from kivy.base import ExceptionHandler, ExceptionManager
 from kivy.clock import Clock
 from kivy.core.window import Window
+from kivy.graphics import Color, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
+from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
+from kivy.uix.widget import Widget
 
 
-SYS = 'You control an Android phone. Reply ONLY JSON: {"commands": [], "reply": "short text"}. Allowed commands: open <app name or website>, search <text>, call <number>, text <number> <message>, timer <minutes>, alarm HH:MM. Use only what the user asked for. Max 5 commands.'
+GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
+              "gemini-flash-latest:generateContent")
+CRASH_PATH = [None]
+
+HELP = ("Say or type: open youtube | search cats | timer 10 minutes | "
+        "alarm 7:30 | add task buy milk | what time is it | "
+        "remember my gym is at 6am | forget gym. "
+        "Anything else goes to Gemini. Also: backup, restore, errors, clear chat.")
+
+
+class CrashLogger(ExceptionHandler):
+    def handle_exception(self, inst):
+        try:
+            if CRASH_PATH[0]:
+                with open(CRASH_PATH[0], "a") as f:
+                    f.write(datetime.now().isoformat() + "\n"
+                            + traceback.format_exc() + "\n")
+        except Exception:
+            pass
+        return ExceptionManager.PASS
+
+
+ExceptionManager.add_handler(CrashLogger())
+
+
+def build_system(facts):
+    s = ('You are Pocket Pal, a friendly voice assistant on the user\'s Android phone. '
+         'Reply ONLY with JSON: {"commands": [], "reply": "what you say to the user"}. '
+         'Keep the reply short and natural because it is spoken aloud. No markdown. '
+         'Put phone actions in "commands" only when the user asked for an action. '
+         'Allowed commands: open <app name or website>, search <text>, call <number>, '
+         'text <number> <message>, timer <minutes>, alarm HH:MM. Max 5 commands. '
+         'If you need more information to finish a task, ask in the reply and leave commands empty.')
+    if facts:
+        s += " Known facts about the user: " + "; ".join(facts) + "."
+    s += " Current date and time: " + datetime.now().strftime("%A %B %d %Y %I:%M %p") + "."
+    return s
 
 
 def http_post(url, headers, body):
@@ -39,6 +83,103 @@ def http_post(url, headers, body):
     sc = Scanner(stream, "UTF-8").useDelimiter("\\A")
     text = sc.next() if sc.hasNext() else ""
     return code, text
+
+
+def autosize(lbl):
+    lbl.size_hint_y = None
+    lbl.halign = "left"
+    lbl.valign = "top"
+    lbl.bind(width=lambda w, v: setattr(w, "text_size", (v, None)),
+             texture_size=lambda w, v: setattr(w, "height", v[1] + 10))
+    return lbl
+
+
+def mk_input(hint, multiline=False, height=45, **kw):
+    return TextInput(input_type="text", keyboard_suggestions=True,
+                     hint_text=hint, multiline=multiline,
+                     size_hint_y=None, height=height, **style_in(kw))
+
+
+class Bubble(Label):
+    def __init__(self, mine=False, **kw):
+        super().__init__(**kw)
+        self.mine = mine
+        self.size_hint_y = None
+        self.halign = "left"
+        self.valign = "middle"
+        self.font_size = "17sp"
+        with self.canvas.before:
+            if mine:
+                Color(0.0, 0.5, 0.7, 1)
+            else:
+                Color(0.17, 0.09, 0.32, 1)
+            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[16])
+        self.bind(pos=self._upd, size=self._upd,
+                  width=self._tw, texture_size=self._th)
+
+    def _tw(self, *a):
+        self.text_size = (max(self.width - 24, 10), None)
+
+    def _th(self, *a):
+        self.height = self.texture_size[1] + 24
+
+    def _upd(self, *a):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+
+
+from kivy.graphics import Line
+from kivy.uix.gridlayout import GridLayout
+
+BG = (0.02, 0.03, 0.08, 1)
+INBG = (0.05, 0.08, 0.17, 1)
+TXT = (0.85, 1.0, 1.0, 1)
+CYAN = (0.0, 0.9, 1.0, 1)
+MAGENTA = (0.85, 0.3, 1.0, 1)
+GREEN = (0.1, 1.0, 0.6, 1)
+AMBER = (1.0, 0.7, 0.15, 1)
+
+
+def style_in(kw):
+    kw.setdefault("background_color", INBG)
+    kw.setdefault("foreground_color", TXT)
+    kw.setdefault("cursor_color", CYAN)
+    kw.setdefault("hint_text_color", (0.4, 0.55, 0.65, 1))
+    return kw
+
+
+class NeonButton(Button):
+    def __init__(self, glow=CYAN, **kw):
+        super().__init__(**kw)
+        self.glow = glow
+        self.active = False
+        self.background_normal = ""
+        self.background_down = ""
+        self.background_color = (0, 0, 0, 0)
+        self.color = glow
+        self.bold = True
+        with self.canvas.before:
+            self._fill = Color(0, 0, 0, 1)
+            self._r = RoundedRectangle(pos=self.pos, size=self.size, radius=[14])
+            Color(*glow)
+            self._l = Line(rounded_rectangle=(self.x, self.y, self.width, self.height, 14), width=1.4)
+        self.bind(pos=self._u, size=self._u, state=self._paint)
+        self._paint()
+
+    def _u(self, *a):
+        self._r.pos = self.pos
+        self._r.size = self.size
+        self._l.rounded_rectangle = (self.x, self.y, self.width, self.height, 14)
+
+    def _paint(self, *a):
+        k = 0.5 if (self.active or self.state == "down") else 0.16
+        g = self.glow
+        self._fill.rgba = (g[0] * k, g[1] * k, g[2] * k, 1)
+
+    def set_active(self, on):
+        self.active = on
+        self._paint()
+
 
 
 class Database:
@@ -112,6 +253,23 @@ class Database:
         CREATE TABLE IF NOT EXISTS activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             message TEXT,
+            created_at TEXT
+        )
+        """)
+
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fact TEXT,
+            created_at TEXT
+        )
+        """)
+
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT,
+            text TEXT,
             created_at TEXT
         )
         """)
@@ -247,6 +405,85 @@ class Database:
             "SELECT COUNT(*) FROM jobs WHERE status='queued'"
         ).fetchone()[0]
 
+    def add_memory(self, fact):
+        self.conn.execute(
+            "INSERT INTO memory(fact, created_at) VALUES (?, ?)",
+            (fact, datetime.now().isoformat()))
+        self.conn.commit()
+
+    def memories(self, limit=40):
+        rows = self.conn.execute(
+            "SELECT fact FROM memory ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [r[0] for r in reversed(rows)]
+
+    def forget(self, term):
+        cur = self.conn.execute(
+            "DELETE FROM memory WHERE LOWER(fact) LIKE ?",
+            ("%" + term.lower() + "%",))
+        self.conn.commit()
+        return cur.rowcount
+
+    def add_chat(self, role, text):
+        self.conn.execute(
+            "INSERT INTO chat(role, text, created_at) VALUES (?, ?, ?)",
+            (role, text, datetime.now().isoformat()))
+        self.conn.commit()
+
+    def recent_chat(self, n=30):
+        rows = self.conn.execute(
+            "SELECT role, text FROM chat ORDER BY id DESC LIMIT ?",
+            (n,)).fetchall()
+        return list(reversed(rows))
+
+    def clear_chat(self):
+        self.conn.execute("DELETE FROM chat")
+        self.conn.commit()
+
+    def list_tasks(self, n=10):
+        return [r[0] for r in self.conn.execute(
+            "SELECT task FROM tasks ORDER BY id DESC LIMIT ?", (n,)).fetchall()]
+
+    def errors(self, n=5):
+        return self.conn.execute(
+            "SELECT created_at, message FROM activity "
+            "WHERE message LIKE 'ERROR%' ORDER BY id DESC LIMIT ?",
+            (n,)).fetchall()
+
+    BACKUP_TABLES = ["tasks", "finances", "gmail_queue", "youtube_queue",
+                     "website_cache", "jobs", "memory"]
+
+    def export_all(self):
+        out = {"pocketpal_backup": 1,
+               "created": datetime.now().isoformat(), "tables": {}}
+        for t in self.BACKUP_TABLES:
+            cur = self.conn.execute("SELECT * FROM " + t)
+            cols = [d[0] for d in cur.description]
+            out["tables"][t] = {"cols": cols,
+                                "rows": [list(r) for r in cur.fetchall()]}
+        return out
+
+    def import_all(self, data):
+        if not isinstance(data, dict) or data.get("pocketpal_backup") != 1:
+            raise ValueError("not a Pocket Pal backup")
+        total = 0
+        for t in self.BACKUP_TABLES:
+            blob = data.get("tables", {}).get(t)
+            if not blob:
+                continue
+            real = [r[1] for r in self.conn.execute("PRAGMA table_info(" + t + ")")]
+            cols = blob["cols"]
+            if any(c not in real for c in cols):
+                raise ValueError("backup columns do not match: " + t)
+            self.conn.execute("DELETE FROM " + t)
+            q = ("INSERT INTO " + t + " (" + ",".join(cols) + ") VALUES ("
+                 + ",".join("?" * len(cols)) + ")")
+            for row in blob["rows"]:
+                self.conn.execute(q, row)
+                total += 1
+        self.conn.commit()
+        return total
+
     def close(self):
         self.conn.close()
 
@@ -322,362 +559,397 @@ class BusinessBackend:
 class BusinessDashboard(App):
 
     def build(self):
-
-        self.title = "Business Command Center"
+        self.title = "Pocket Pal"
         Window.softinput_mode = "below_target"
-
-        os.makedirs(
-            self.user_data_dir,
-            exist_ok=True
-        )
-
-        db_path = os.path.join(
-            self.user_data_dir,
-            "business.db"
-        )
-
-        self.db = Database(db_path)
-
-        self.backend = BusinessBackend(
-            self.db
-        )
-
-        root = BoxLayout(
-            orientation="vertical",
-            padding=8,
-            spacing=8
-        )
-
-        title = Label(
-            text="BUSINESS COMMAND CENTER",
-            font_size="22sp",
-            size_hint_y=None,
-            height=50
-        )
-
-        root.add_widget(title)
-
-        self.dashboard = Label(
-            text="Loading...",
-            size_hint_y=None,
-            height=100
-        )
-
-        root.add_widget(
-            self.dashboard
-        )
-
-        scroll = ScrollView()
-
-        content = BoxLayout(
-            orientation="vertical",
-            spacing=8,
-            size_hint_y=None
-        )
-
-        content.bind(
-            minimum_height=content.setter("height")
-        )
-
-        # TASKS
-
-        content.add_widget(
-            Label(
-                text="TASKS",
-                font_size="18sp",
-                size_hint_y=None,
-                height=40
-            )
-        )
-
-        self.task_input = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Enter task",
-            multiline=False,
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.task_input
-        )
-
-        button = Button(
-            text="ADD TASK",
-            size_hint_y=None,
-            height=45
-        )
-
-        button.bind(
-            on_press=self.add_task
-        )
-
-        content.add_widget(button)
-
-        # FINANCES
-
-        content.add_widget(
-            Label(
-                text="FINANCES",
-                font_size="18sp",
-                size_hint_y=None,
-                height=40
-            )
-        )
-
-        self.finance_description = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Description",
-            multiline=False,
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.finance_description
-        )
-
-        self.finance_amount = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Amount",
-            multiline=False,
-            input_filter="float",
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.finance_amount
-        )
-
-        self.finance_category = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Category",
-            multiline=False,
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.finance_category
-        )
-
-        button = Button(
-            text="ADD FINANCE",
-            size_hint_y=None,
-            height=45
-        )
-
-        button.bind(
-            on_press=self.add_finance
-        )
-
-        content.add_widget(button)
-
-        # GMAIL
-
-        content.add_widget(
-            Label(
-                text="GMAIL",
-                font_size="18sp",
-                size_hint_y=None,
-                height=40
-            )
-        )
-
-        self.email_to = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Recipient email",
-            multiline=False,
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.email_to
-        )
-
-        self.email_subject = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Subject",
-            multiline=False,
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.email_subject
-        )
-
-        self.email_body = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Email message",
-            multiline=True,
-            size_hint_y=None,
-            height=120
-        )
-
-        content.add_widget(
-            self.email_body
-        )
-
-        button = Button(
-            text="QUEUE EMAIL",
-            size_hint_y=None,
-            height=45
-        )
-
-        button.bind(
-            on_press=self.queue_email
-        )
-
-        content.add_widget(button)
-
-        button = Button(
-            text="CREATE DAILY REPORT",
-            size_hint_y=None,
-            height=45
-        )
-
-        button.bind(
-            on_press=self.daily_report
-        )
-
-        content.add_widget(button)
-
-        # YOUTUBE
-
-        content.add_widget(
-            Label(
-                text="YOUTUBE",
-                font_size="18sp",
-                size_hint_y=None,
-                height=40
-            )
-        )
-
-        self.youtube_url = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Video URL",
-            multiline=False,
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.youtube_url
-        )
-
-        self.youtube_comment = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Comment",
-            multiline=True,
-            size_hint_y=None,
-            height=100
-        )
-
-        content.add_widget(
-            self.youtube_comment
-        )
-
-        button = Button(
-            text="QUEUE COMMENT",
-            size_hint_y=None,
-            height=45
-        )
-
-        button.bind(
-            on_press=self.queue_youtube
-        )
-
-        content.add_widget(button)
-
-        # WEBSITE
-
-        content.add_widget(
-            Label(
-                text="WEBSITE ANALYTICS",
-                font_size="18sp",
-                size_hint_y=None,
-                height=40
-            )
-        )
-
-        self.website_url = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Website URL",
-            multiline=False,
-            size_hint_y=None,
-            height=45
-        )
-
-        content.add_widget(
-            self.website_url
-        )
-
-        button = Button(
-            text="CHECK WEBSITE",
-            size_hint_y=None,
-            height=45
-        )
-
-        button.bind(
-            on_press=self.check_website
-        )
-
-        content.add_widget(button)
-
-        # ACTIVITY
-
-        content.add_widget(
-            Label(
-                text="ACTIVITY LOG",
-                font_size="18sp",
-                size_hint_y=None,
-                height=40
-            )
-        )
-
-        self.log_output = Label(
-            text="Ready.",
-            size_hint_y=None,
-            height=200
-        )
-
-        content.add_widget(
-            self.log_output
-        )
-
-        scroll.add_widget(content)
-
-        job_row = BoxLayout(
-            orientation="horizontal",
-            size_hint_y=None,
-            height=110,
-            spacing=8
-        )
-        self.job_input = TextInput(input_type='text', keyboard_suggestions=True, 
-            hint_text="Command (start with pc: for PC jobs)",
-            multiline=False
-        )
-        job_btn = Button(text="Send", size_hint_x=0.25)
-        job_btn.bind(on_press=self.add_job)
-        job_row.add_widget(self.job_input)
-        job_row.add_widget(job_btn)
-        root.add_widget(job_row)
-        mic = Button(text="SPEAK", size_hint_y=None, height=120)
-        mic.bind(on_press=self.listen)
-        root.add_widget(mic)
-        self.answer = Label(
-            text="Gemini answers show here",
-            size_hint_y=None, halign="left", valign="top")
-        self.answer.bind(
-            width=lambda w, v: setattr(w, "text_size", (v, None)),
-            texture_size=lambda w, v: setattr(w, "height", v[1] + 10))
-        ans_scroll = ScrollView(size_hint_y=None, height=220)
-        ans_scroll.add_widget(self.answer)
-        root.add_widget(ans_scroll)
-
-        root.add_widget(scroll)
-
+        Window.clearcolor = BG
+        os.makedirs(self.user_data_dir, exist_ok=True)
+        CRASH_PATH[0] = os.path.join(self.user_data_dir, "crash.log")
+        self.cfg_path = os.path.join(self.user_data_dir, "settings.json")
+        self.key_path = os.path.join(self.user_data_dir, "gemini.key")
+        self.load_settings()
+        self.db = Database(os.path.join(self.user_data_dir, "business.db"))
+        self.backend = BusinessBackend(self.db)
+        self.hist = []
+        self.cool_until = 0
+        self.convo_active = False
+        self.tts = None
+        self.tts_ok = False
+        self.thinking = None
+
+        root = BoxLayout(orientation="vertical", padding=6, spacing=6)
+        self.body = BoxLayout()
+        root.add_widget(self.body)
+        bar = BoxLayout(size_hint_y=None, height=58, spacing=5)
+        self.tab_btns = {}
+        self.tab_views = {}
+        tabs = [("TALK", self.build_chat, CYAN), ("PHONE", self.build_phone, GREEN),
+                ("LOOKUP", self.build_lookup, AMBER), ("TASKS", self.build_tasks, MAGENTA),
+                ("MORE", self.build_more, CYAN)]
+        for name, fn, col in tabs:
+            self.tab_views[name] = fn()
+            b = NeonButton(glow=col, text=name, font_size="13sp")
+            b.bind(on_press=lambda inst, n=name: self.switch(n))
+            self.tab_btns[name] = b
+            bar.add_widget(b)
+        root.add_widget(bar)
+        self.switch("TALK")
+        self.load_chat()
+        self.refresh()
+        Clock.schedule_interval(lambda dt: self.refresh(), 5)
+        return root
+
+    # ---------- settings ----------
+
+    def load_settings(self):
+        self.cfg = {"talk": True, "convo": False, "auto": False}
+        try:
+            with open(self.cfg_path) as f:
+                self.cfg.update(json.load(f))
+        except Exception:
+            pass
+
+    def save_settings(self):
+        try:
+            with open(self.cfg_path, "w") as f:
+                json.dump(self.cfg, f)
+        except Exception:
+            pass
+
+    def upd_toggles(self):
+        def t(b, name, k):
+            on = bool(self.cfg.get(k))
+            b.text = name + ": " + ("ON" if on else "OFF")
+            b.color = GREEN if on else (0.6, 0.6, 0.75, 1)
+        t(self.b_talk, "Talk back", "talk")
+        t(self.b_convo, "Conversation", "convo")
+        t(self.b_auto, "Auto-listen", "auto")
+
+    def tog(self, key):
+        self.cfg[key] = not self.cfg.get(key, False)
+        if key == "convo" and not self.cfg[key]:
+            self.convo_active = False
+        self.save_settings()
+        self.upd_toggles()
+
+    # ---------- layout helpers ----------
+
+    def switch(self, name):
+        self.cur_tab = name
+        self.body.clear_widgets()
+        self.body.add_widget(self.tab_views[name])
+        for n, b in self.tab_btns.items():
+            b.set_active(n == name)
+
+    def _scroll(self):
+        sv = ScrollView()
+        c = BoxLayout(orientation="vertical", spacing=8, size_hint_y=None, padding=[2, 2])
+        c.bind(minimum_height=c.setter("height"))
+        sv.add_widget(c)
+        return sv, c
+
+    def _head(self, c, t, col=CYAN):
+        c.add_widget(Label(text=t, color=col, bold=True, font_size="16sp",
+                           size_hint_y=None, height=36))
+
+    def _btn(self, c, t, cb, col=CYAN, h=48):
+        b = NeonButton(glow=col, text=t, size_hint_y=None, height=h)
+        b.bind(on_press=cb)
+        c.add_widget(b)
+        return b
+
+    def _row(self, c, inp, label, cb, col=CYAN):
+        r = BoxLayout(size_hint_y=None, height=48, spacing=6)
+        r.add_widget(inp)
+        b = NeonButton(glow=col, text=label, size_hint_x=0.32)
+        b.bind(on_press=cb)
+        r.add_widget(b)
+        c.add_widget(r)
+
+    # ---------- tabs ----------
+
+    def build_chat(self):
+        v = BoxLayout(orientation="vertical", spacing=6)
+        self.chat_scroll = ScrollView()
+        self.chat_box = BoxLayout(orientation="vertical", size_hint_y=None,
+                                  spacing=8, padding=6)
+        self.chat_box.bind(minimum_height=self.chat_box.setter("height"))
+        self.chat_scroll.add_widget(self.chat_box)
+        v.add_widget(self.chat_scroll)
+
+        trow = BoxLayout(size_hint_y=None, height=46, spacing=6)
+        self.b_talk = NeonButton(glow=MAGENTA, font_size="13sp")
+        self.b_convo = NeonButton(glow=MAGENTA, font_size="13sp")
+        self.b_auto = NeonButton(glow=MAGENTA, font_size="13sp")
+        self.b_talk.bind(on_press=lambda *a: self.tog("talk"))
+        self.b_convo.bind(on_press=lambda *a: self.tog("convo"))
+        self.b_auto.bind(on_press=lambda *a: self.tog("auto"))
+        for b in (self.b_talk, self.b_convo, self.b_auto):
+            trow.add_widget(b)
+        v.add_widget(trow)
+        self.upd_toggles()
+
+        irow = BoxLayout(size_hint_y=None, height=64, spacing=6)
+        self.msg_input = TextInput(input_type="text", keyboard_suggestions=True,
+                                   hint_text="Type a message or command",
+                                   multiline=False, font_size="18sp",
+                                   **style_in({}))
+        self.msg_input.bind(on_text_validate=self.on_send)
+        send = NeonButton(glow=CYAN, text="SEND", size_hint_x=0.28, font_size="16sp")
+        send.bind(on_press=self.on_send)
+        irow.add_widget(self.msg_input)
+        irow.add_widget(send)
+        v.add_widget(irow)
+
+        mic = NeonButton(glow=GREEN, text="TAP TO TALK", size_hint_y=None,
+                         height=110, font_size="22sp")
+        mic.bind(on_press=self.on_mic)
+        v.add_widget(mic)
+        return v
+
+    def phone_go(self, cmd):
+        try:
+            res = self.pa(cmd)
+        except Exception as e:
+            self.err("phone tab", e)
+            res = "Error: " + str(e)[:100]
+        self.phone_status.text = res
+
+    def build_phone(self):
+        sv, c = self._scroll()
+        self.phone_status = autosize(Label(text="Pick an app or action.", color=GREEN))
+        c.add_widget(self.phone_status)
+
+        self._head(c, "OPEN APP", GREEN)
+        apps = [("YouTube", "youtube"), ("Gmail", "gmail"), ("Chrome", "chrome"),
+                ("Maps", "maps"), ("Camera", "camera"), ("Settings", "settings"),
+                ("TikTok", "tiktok"), ("Messages", "messages")]
+        g = GridLayout(cols=2, spacing=8, size_hint_y=None, height=4 * 56 + 3 * 8)
+        for label, app in apps:
+            b = NeonButton(glow=GREEN, text=label)
+            b.bind(on_press=lambda inst, a=app: self.phone_go("open " + a))
+            g.add_widget(b)
+        c.add_widget(g)
+
+        self._head(c, "TIMER AND ALARM", AMBER)
+        self.timer_in = mk_input("Minutes", input_filter="float")
+        self._row(c, self.timer_in, "TIMER",
+                  lambda *a: self.phone_go("timer " + self.timer_in.text.strip()), AMBER)
+        self.alarm_in = mk_input("Time HH:MM (24h)")
+        self._row(c, self.alarm_in, "ALARM",
+                  lambda *a: self.phone_go("alarm " + self.alarm_in.text.strip()), AMBER)
+
+        self._head(c, "CALL AND TEXT", CYAN)
+        self.call_in = mk_input("Phone number")
+        self._row(c, self.call_in, "CALL",
+                  lambda *a: self.phone_go("call " + self.call_in.text.strip()), CYAN)
+        self.sms_num = mk_input("Text to number")
+        c.add_widget(self.sms_num)
+        self.sms_msg = mk_input("Message")
+        self._row(c, self.sms_msg, "TEXT",
+                  lambda *a: self.phone_go("text " + self.sms_num.text.strip()
+                                           + " " + self.sms_msg.text.strip()), CYAN)
+        return sv
+
+    def look_q(self):
+        return self.look_in.text.strip()
+
+    def look_search(self, kind):
+        q = self.look_q()
+        if not q:
+            return
+        if kind == "web":
+            self.phone_go("search " + q)
+        elif kind == "yt":
+            self.phone_go("open https://www.youtube.com/results?search_query=" + quote(q))
+        elif kind == "ai":
+            self.look_in.text = ""
+            self.switch("TALK")
+            self.handle("ask " + q, False)
+
+    def build_lookup(self):
+        sv, c = self._scroll()
+        self._head(c, "LOOK UP", AMBER)
+        self.look_in = mk_input("What do you want to find out?", height=56)
+        c.add_widget(self.look_in)
+        self._btn(c, "ASK AI (Gemini)", lambda *a: self.look_search("ai"), MAGENTA, 56)
+        self._btn(c, "SEARCH THE WEB", lambda *a: self.look_search("web"), AMBER, 56)
+        self._btn(c, "SEARCH YOUTUBE", lambda *a: self.look_search("yt"), GREEN, 56)
+        self._head(c, "WEBSITE CHECK", CYAN)
+        self.website_url = mk_input("Website URL")
+        c.add_widget(self.website_url)
+        self._btn(c, "CHECK WEBSITE", self.check_website, CYAN)
+        return sv
+
+    def build_tasks(self):
+        v = BoxLayout(orientation="vertical", spacing=6)
+        self.dashboard = Label(text="Loading...", color=CYAN, bold=True,
+                               size_hint_y=None, height=70)
+        v.add_widget(self.dashboard)
+        sv, c = self._scroll()
+        self._head(c, "TASKS", MAGENTA)
+        self.task_input = mk_input("Enter task")
+        c.add_widget(self.task_input)
+        self._btn(c, "ADD TASK", self.add_task, MAGENTA)
+        self._head(c, "FINANCES", GREEN)
+        self.finance_description = mk_input("Description")
+        c.add_widget(self.finance_description)
+        self.finance_amount = mk_input("Amount", input_filter="float")
+        c.add_widget(self.finance_amount)
+        self.finance_category = mk_input("Category")
+        c.add_widget(self.finance_category)
+        self._btn(c, "ADD FINANCE", self.add_finance, GREEN)
+        v.add_widget(sv)
+        return v
+
+    def build_more(self):
+        sv, c = self._scroll()
+        self._head(c, "GMAIL", CYAN)
+        self.email_to = mk_input("Recipient email")
+        c.add_widget(self.email_to)
+        self.email_subject = mk_input("Subject")
+        c.add_widget(self.email_subject)
+        self.email_body = mk_input("Email message", multiline=True, height=120)
+        c.add_widget(self.email_body)
+        self._btn(c, "QUEUE EMAIL", self.queue_email, CYAN)
+        self._btn(c, "CREATE DAILY REPORT", self.daily_report, CYAN)
+
+        self._head(c, "YOUTUBE", GREEN)
+        self.youtube_url = mk_input("Video URL")
+        c.add_widget(self.youtube_url)
+        self.youtube_comment = mk_input("Comment", multiline=True, height=100)
+        c.add_widget(self.youtube_comment)
+        self._btn(c, "QUEUE COMMENT", self.queue_youtube, GREEN)
+
+        self._head(c, "BACKUP", AMBER)
+        self._btn(c, "BACKUP (share / copy)", lambda *a: self.handle("backup", False), AMBER)
+        self._btn(c, "RESTORE (from clipboard)", lambda *a: self.handle("restore", False), AMBER)
+
+        self._head(c, "ACTIVITY LOG", MAGENTA)
+        self.log_output = autosize(Label(text="Ready.", color=TXT))
+        c.add_widget(self.log_output)
+        return sv
+
+    # ---------- chat helpers ----------
+
+    def add_msg(self, text, mine):
+        b = Bubble(mine=mine, text=text)
+        row = BoxLayout(size_hint_y=None, height=b.height, spacing=6)
+        b.bind(height=lambda w, h: setattr(row, "height", h))
+        b.size_hint_x = 0.85
+        if mine:
+            row.add_widget(Widget(size_hint_x=0.15))
+            row.add_widget(b)
+        else:
+            row.add_widget(b)
+            row.add_widget(Widget(size_hint_x=0.15))
+        self.chat_box.add_widget(row)
+        Clock.schedule_once(lambda dt: setattr(self.chat_scroll, "scroll_y", 0), 0.15)
+        return row
+
+    def remove_thinking(self):
+        if self.thinking is not None:
+            try:
+                self.chat_box.remove_widget(self.thinking)
+            except Exception:
+                pass
+            self.thinking = None
+
+    def load_chat(self):
+        rows = self.db.recent_chat(30)
+        for role, text in rows:
+            self.add_msg(text, role == "user")
+        self.hist = [("user" if r == "user" else "model", t) for r, t in rows][-8:]
+        if not rows:
+            self.add_msg("Hi! Tap VOICE COMMAND and say something like "
+                         "\"open youtube\" or \"set a timer for 10 minutes\". "
+                         "Type help for more.", False)
+        if not os.path.exists(self.key_path):
+            self.add_msg("To enable AI answers, type: setkey YOUR_GEMINI_KEY", False)
+
+    def err(self, where, e):
+        try:
+            self.db.log("ERROR " + where + ": " + str(e)[:200])
+        except Exception:
+            pass
+
+    def reply(self, text):
+        self.remove_thinking()
+        self.add_msg(text, False)
+        try:
+            self.db.add_chat("bot", text)
+            self.db.log("Pal: " + text[:100])
+        except Exception as e:
+            self.err("reply", e)
+        self.hist.append(("model", text))
+        self.hist = self.hist[-12:]
+        self.speak(text)
+        if self.convo_active:
+            Clock.schedule_once(lambda dt: self._after_speech(0), 0.6)
         self.refresh()
 
-        Clock.schedule_interval(
-            lambda dt: self.refresh(),
-            5
-        )
+    # ---------- text to speech ----------
 
-        return root
+    def init_tts(self):
+        try:
+            from jnius import autoclass, PythonJavaClass, java_method
+            PA = autoclass("org.kivy.android.PythonActivity")
+            TTS = autoclass("android.speech.tts.TextToSpeech")
+            app = self
+
+            class InitListener(PythonJavaClass):
+                __javainterfaces__ = ["android/speech/tts/TextToSpeech$OnInitListener"]
+                __javacontext__ = "app"
+
+                @java_method("(I)V")
+                def onInit(self, status):
+                    app.tts_ok = (status == 0)
+
+            self._tts_listener = InitListener()
+            self.tts = TTS(PA.mActivity, self._tts_listener)
+        except Exception as e:
+            self.err("tts init", e)
+
+    def speak(self, text):
+        if not (self.cfg.get("talk") and self.tts_ok and self.tts is not None):
+            return
+        try:
+            from jnius import autoclass
+            TTS = autoclass("android.speech.tts.TextToSpeech")
+            t = re.sub(r"[*_`#]", "", text)[:700]
+            self.tts.speak(t, TTS.QUEUE_FLUSH, None, "pp")
+        except Exception as e:
+            self.err("speak", e)
+
+    def _after_speech(self, tries):
+        if not self.convo_active:
+            return
+        speaking = False
+        try:
+            speaking = bool(self.tts is not None and self.tts_ok and self.tts.isSpeaking())
+        except Exception:
+            speaking = False
+        if speaking and tries < 120:
+            Clock.schedule_once(lambda dt: self._after_speech(tries + 1), 0.5)
+            return
+        Clock.schedule_once(lambda dt: self.listen(), 0.4)
+
+    # ---------- actions from buttons ----------
+
+    def on_send(self, instance):
+        text = self.msg_input.text.strip()
+        self.msg_input.text = ""
+        self.convo_active = False
+        if text:
+            self.handle(text, False)
+
+    def on_mic(self, instance):
+        try:
+            if self.tts is not None and self.tts_ok:
+                self.tts.stop()
+        except Exception:
+            pass
+        self.convo_active = bool(self.cfg.get("convo"))
+        self.listen()
 
     def add_task(self, instance):
 
@@ -869,7 +1141,7 @@ class BusinessDashboard(App):
         except Exception as e:
             return "error: " + str(e)
 
-    def listen(self, instance):
+    def listen(self):
         try:
             from jnius import autoclass
             from android import activity
@@ -878,160 +1150,359 @@ class BusinessDashboard(App):
             RS = autoclass("android.speech.RecognizerIntent")
             i = Intent(RS.ACTION_RECOGNIZE_SPEECH)
             i.putExtra(RS.EXTRA_LANGUAGE_MODEL, RS.LANGUAGE_MODEL_FREE_FORM)
-            i.putExtra(RS.EXTRA_PROMPT, "Speak a command")
+            i.putExtra(RS.EXTRA_PROMPT, "Listening...")
             activity.unbind(on_activity_result=self.on_speech)
             activity.bind(on_activity_result=self.on_speech)
             PA.mActivity.startActivityForResult(i, 4242)
         except Exception as e:
-            self.answer.text = "Mic error: " + str(e)
+            self.convo_active = False
+            self.err("mic", e)
+            self.add_msg("Mic error: " + str(e)[:150], False)
 
     def on_speech(self, request, result, data):
-        if request != 4242 or result != -1 or data is None:
+        if request != 4242:
+            return
+        if result != -1 or data is None:
+            self.convo_active = False
             return
         try:
             from jnius import autoclass
             RS = autoclass("android.speech.RecognizerIntent")
             said = str(data.getStringArrayListExtra(RS.EXTRA_RESULTS).get(0)).strip()
         except Exception as e:
-            Clock.schedule_once(lambda dt: setattr(self.answer, "text", "Mic error: " + str(e)), 0)
+            self.convo_active = False
+            Clock.schedule_once(lambda dt: self.err("speech result", e), 0)
             return
-        def go(dt):
-            t = said
-            if not t.lower().startswith(("ask ", "do ", "open ", "search ", "call ", "text ", "timer ", "alarm ")):
-                t = "do " + t
-            self.answer.text = "Heard: " + said
-            self.job_input.text = t
-            self.add_job(None)
-        Clock.schedule_once(go, 0)
+        Clock.schedule_once(lambda dt: self.handle(said, True), 0)
 
-    def gemini_ask(self, q, agent=False):
-        cmds = []
+    # ---------- brain: local first, Gemini second ----------
+
+    def handle(self, text, voice=False):
+        text = text.strip()
+        if not text:
+            return
+        low = text.lower().strip().rstrip(".!?")
+
+        if low.startswith("setkey "):
+            try:
+                with open(self.key_path, "w") as f:
+                    f.write(text[7:].strip())
+                self.add_msg("setkey ****", True)
+                self.reply("Key saved on this phone. Ask me anything.")
+            except Exception as e:
+                self.err("setkey", e)
+                self.reply("Could not save the key.")
+            return
+
+        self.add_msg(text, True)
         try:
-            key = open(os.path.join(self.user_data_dir, "gemini.key")).read().strip()
+            self.db.add_chat("user", text)
+        except Exception as e:
+            self.err("chat save", e)
+        self.hist.append(("user", text))
+        self.hist = self.hist[-12:]
+
+        if low in ("stop", "stop listening", "cancel", "goodbye",
+                   "that's all", "thats all", "never mind", "nevermind"):
+            self.convo_active = False
+            self.reply("Okay.")
+            return
+
+        force_ai = False
+        if low.startswith(("ask ", "do ")):
+            text = text.split(" ", 1)[1].strip()
+            low = text.lower()
+            force_ai = True
+
+        if not force_ai:
+            try:
+                r = self.local_route(text, low)
+            except Exception as e:
+                self.err("route", e)
+                r = None
+            if r is not None:
+                self.reply(r)
+                return
+        self.ask_gemini(text)
+
+    def pa(self, cmd):
+        res = self.phone_action(cmd)
+        self.db.log("Phone: " + cmd + " -> " + res)
+        return res[:1].upper() + res[1:]
+
+    def local_route(self, text, low):
+        if low.startswith("pc:"):
+            self.db.add_job("pc", text[3:].strip())
+            return "Queued for the PC. Nothing delivers PC jobs yet."
+
+        m = re.match(r"^remember(?: that)?\s+(.+)$", text, re.I)
+        if m:
+            self.db.add_memory(m.group(1).strip())
+            return "Got it. I will remember: " + m.group(1).strip()
+        m = re.match(r"^forget(?: that| about)?\s+(.+)$", text, re.I)
+        if m:
+            n = self.db.forget(m.group(1).strip())
+            return ("Forgot %d item(s)." % n) if n else "I had nothing saved matching that."
+        if low in ("memories", "what do you remember", "what do you know about me",
+                   "what do you remember about me", "list memories"):
+            facts = self.db.memories()
+            return ("I remember: " + "; ".join(facts)) if facts else "I have nothing saved yet. Say: remember ..."
+        if low in ("help", "what can you do", "commands"):
+            return HELP
+        if low == "backup":
+            return self.do_backup()
+        if low == "restore":
+            return self.do_restore()
+        if low == "errors":
+            rows = self.db.errors()
+            if not rows:
+                return "No errors logged."
+            return "\n".join(r[0][5:16].replace("T", " ") + " " + r[1][:110] for r in rows)
+        if low == "clear chat":
+            self.db.clear_chat()
+            self.chat_box.clear_widgets()
+            self.hist = []
+            return "Chat cleared."
+
+        if low in ("what time is it", "what's the time", "whats the time",
+                   "time", "current time", "what time is it now"):
+            return "It is " + datetime.now().strftime("%I:%M %p").lstrip("0")
+        if low in ("what is the date", "what's the date", "whats the date",
+                   "what day is it", "what is today", "what's today",
+                   "what is the date today", "what's the date today"):
+            return "Today is " + datetime.now().strftime("%A, %B %d, %Y")
+
+        m = re.match(r"^(?:add task|new task|add a task|remind me to)\s+(?:to\s+)?(.+)$", text, re.I)
+        if m:
+            self.db.add_task(m.group(1).strip())
+            return "Task added: " + m.group(1).strip()
+        if low in ("show my tasks", "list tasks", "list my tasks", "my tasks",
+                   "what are my tasks", "show tasks"):
+            t = self.db.list_tasks()
+            return ("Your tasks: " + "; ".join(t)) if t else "You have no tasks."
+        if low in ("how much have i spent", "finance total", "my finances",
+                   "show my finances", "how much did i spend"):
+            return "Your finance total is $%.2f" % self.db.finance_total()
+
+        # open X and search Y
+        m = re.match(r"^(?:open|launch)\s+(.+?)\s+and\s+(?:search|look up|google)(?:\s+for)?\s+(.+)$", low)
+        if m:
+            app, q = m.group(1), m.group(2)
+            if "youtube" in app:
+                return self.pa("open https://www.youtube.com/results?search_query=" + quote(q))
+            return self.pa("search " + q)
+        m = (re.match(r"^(?:search|find)\s+(?:youtube\s+for|on youtube for)\s+(.+)$", low)
+             or re.match(r"^search\s+(.+?)\s+on youtube$", low)
+             or re.match(r"^play\s+(.+?)\s+on youtube$", low))
+        if m:
+            return self.pa("open https://www.youtube.com/results?search_query=" + quote(m.group(1)))
+
+        # timers and alarms
+        if "timer" in low and len(low.split()) <= 9:
+            m = re.search(r"(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?|seconds?|secs?)", low)
+            if m:
+                n = float(m.group(1))
+                u = m.group(2)
+                mins = n * 60 if u.startswith("h") else (n / 60.0 if u.startswith("s") else n)
+                return self.pa("timer " + str(mins))
+            m = re.match(r"^timer\s+(\d+(?:\.\d+)?)$", low)
+            if m:
+                return self.pa("timer " + m.group(1))
+        m = re.match(r"^(?:set\s+)?(?:an?\s+)?alarm(?:\s+(?:for|at))?\s+(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?$", low)
+        if m:
+            h = int(m.group(1))
+            mi = int(m.group(2) or 0)
+            ap = m.group(3)
+            if ap == "p" and h < 12:
+                h += 12
+            if ap == "a" and h == 12:
+                h = 0
+            if h > 23 or mi > 59:
+                return "That time does not look right."
+            return self.pa("alarm %02d:%02d" % (h, mi))
+
+        m = re.match(r"^(?:open|launch)\s+(.+)$", text, re.I)
+        if m:
+            return self.pa("open " + m.group(1).strip())
+        m = re.match(r"^(?:search|google|look up)\s+(?:for\s+)?(.+)$", text, re.I)
+        if m:
+            return self.pa("search " + m.group(1).strip())
+        m = re.match(r"^call\s+([\d\s\-\+\(\)]{5,})$", text, re.I)
+        if m:
+            return self.pa("call " + m.group(1).strip())
+        m = re.match(r"^text\s+([\d\+\-\(\)]{5,})\s+(.+)$", text, re.I)
+        if m:
+            return self.pa("text " + m.group(1) + " " + m.group(2))
+        return None
+
+    def ask_gemini(self, text):
+        try:
+            with open(self.key_path) as f:
+                key = f.read().strip()
         except Exception:
             key = ""
         if not key:
-            msg = "No key yet. Type: setkey YOUR_KEY"
-        else:
-            try:
-                payload = {"contents": [{"parts": [{"text": q}]}]}
-                if agent:
-                    payload["systemInstruction"] = {"parts": [{"text": SYS}]}
-                    payload["generationConfig"] = {"responseMimeType": "application/json"}
-                code, raw = http_post(
-                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
-                    {"Content-Type": "application/json", "x-goog-api-key": key},
-                    json.dumps(payload).encode())
-                if code != 200:
-                    msg = "Gemini error " + str(code) + ": " + raw[:300]
-                else:
-                    txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    if agent:
-                        d = json.loads(txt)
-                        cmds = [str(c) for c in d.get("commands", [])][:5]
-                        msg = "Gemini: " + str(d.get("reply", ""))
-                        if cmds:
-                            msg += " | Ran: " + "; ".join(cmds)
-                    else:
-                        msg = "Gemini: " + txt
-            except Exception as e:
-                msg = "Gemini error: " + str(e)
-        def done(dt):
-            self.db.log(msg)
-            self.answer.text = msg
-            for n, c in enumerate(cmds):
-                Clock.schedule_once(lambda d, c=c: self.db.log("Phone: " + c + " -> " + self.phone_action(c)), 2 * n + 1)
-            self.refresh()
-        Clock.schedule_once(done, 0)
-
-    def add_job(self, instance):
-        text = self.job_input.text.strip()
-        low = text.lower()
-        if low.startswith(("setkey ", "ask ", "do ")):
-            self.job_input.text = ""
-            if low.startswith("setkey "):
-                kp = os.path.join(self.user_data_dir, "gemini.key")
-                open(kp, "w").write(text[7:].strip())
-                self.db.log("Gemini key saved on this phone")
-            else:
-                agent = low.startswith("do ")
-                q = text[3:].strip() if agent else text[4:].strip()
-                self.db.log("Asking Gemini...")
-                threading.Thread(target=self.gemini_ask, args=(q, agent), daemon=True).start()
-            self.refresh()
+            self.reply("I need a Gemini key for that. Type: setkey YOUR_KEY")
             return
-        if text:
-            target = "phone"
-            if text.lower().startswith("pc:"):
-                target = "pc"
-                text = text[3:].strip()
-            if target == "phone":
-                result = self.phone_action(text)
-                self.db.log(f"Phone: {text} -> {result}")
-            else:
-                self.db.add_job(target, text)
-                self.db.log(f"Job queued for {target}: {text}")
-            self.job_input.text = ""
+        wait = int(self.cool_until - time.time())
+        if wait > 0:
+            self.reply("Gemini is resting after hitting its free limit. Try again in "
+                       + str(wait) + " seconds. Simple commands like open, search, "
+                       "timer and alarm still work.")
+            return
+        contents = []
+        for role, t in self.hist[-8:]:
+            if not contents and role != "user":
+                continue
+            contents.append({"role": role, "parts": [{"text": t}]})
+        if not contents:
+            contents = [{"role": "user", "parts": [{"text": text}]}]
+        payload = {
+            "systemInstruction": {"parts": [{"text": build_system(self.db.memories())}]},
+            "contents": contents,
+            "generationConfig": {"responseMimeType": "application/json"},
+        }
+        self.thinking = self.add_msg("...", False)
+        body = json.dumps(payload).encode()
+        threading.Thread(target=self._gemini_thread, args=(key, body), daemon=True).start()
+
+    def _gemini_thread(self, key, body):
+        code, raw, err = 0, "", ""
+        try:
+            code, raw = http_post(
+                GEMINI_URL,
+                {"Content-Type": "application/json", "x-goog-api-key": key},
+                body)
+        except Exception as e:
+            err = str(e)
+        Clock.schedule_once(lambda dt: self.on_gemini(code, raw, err), 0)
+
+    def on_gemini(self, code, raw, err):
+        if err:
+            self.err("gemini net", err)
+            self.reply("I could not reach Gemini. Check your connection.")
+            return
+        if code == 429:
+            self.cool_until = time.time() + 60
+            self.reply("Gemini's free limit was hit. I will rest for a minute. "
+                       "Simple commands still work.")
+            return
+        if code != 200:
+            self.err("gemini " + str(code), raw[:150])
+            self.reply("Gemini error " + str(code) + ". Try again in a moment.")
+            return
+        try:
+            txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception:
+            self.reply("Gemini gave no answer to that.")
+            return
+        reply_text, cmds = txt, []
+        try:
+            t2 = txt
+            if t2.startswith("```"):
+                t2 = re.sub(r"^```(?:json)?|```$", "", t2, flags=re.M).strip()
+            d = json.loads(t2)
+            if isinstance(d, dict):
+                reply_text = str(d.get("reply", "")) or "Done."
+                cmds = [str(c) for c in d.get("commands", [])][:5]
+        except Exception:
+            pass
+        self.reply(reply_text)
+        for n, c in enumerate(cmds):
+            Clock.schedule_once(lambda dt, c=c: self.run_cmd(c), 1.5 + 1.5 * n)
+
+    def run_cmd(self, c):
+        try:
+            res = self.phone_action(c)
+            self.db.log("Phone: " + c + " -> " + res)
+            self.add_msg("> " + c + ": " + res, False)
+        except Exception as e:
+            self.err("run_cmd", e)
+
+    # ---------- backup / restore ----------
+
+    def do_backup(self):
+        s = json.dumps(self.db.export_all())
+        done = []
+        try:
+            from kivy.core.clipboard import Clipboard
+            Clipboard.copy(s)
+            done.append("copied to the clipboard")
+        except Exception as e:
+            self.err("clipboard", e)
+        try:
+            from jnius import autoclass
+            PA = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            i = Intent(Intent.ACTION_SEND)
+            i.setType("text/plain")
+            i.putExtra(Intent.EXTRA_TEXT, s)
+            PA.mActivity.startActivity(Intent.createChooser(i, "Save Pocket Pal backup"))
+            done.append("opened the share sheet")
+        except Exception as e:
+            self.err("share", e)
+        if not done:
+            return "Backup failed. Type errors to see why."
+        return ("Backup " + " and ".join(done)
+                + ". Save it somewhere safe (Gmail draft, Keep or Drive). "
+                  "To restore, copy that text and type restore.")
+
+    def do_restore(self):
+        try:
+            from kivy.core.clipboard import Clipboard
+            data = json.loads(Clipboard.paste())
+            n = self.db.import_all(data)
             self.refresh()
+            return "Restored %d items from the clipboard backup." % n
+        except Exception as e:
+            self.err("restore", e)
+            return "I could not restore from the clipboard. Copy the backup text first."
+
+    # ---------- lifecycle ----------
 
     def refresh(self):
-
         try:
-
             total = self.db.finance_total()
-
             tasks = self.db.task_count()
-
             emails = self.db.email_count()
-
             comments = self.db.youtube_count()
-
             self.dashboard.text = (
-                f"TASKS: {tasks}     "
-                f"FINANCES: ${total:.2f}\n"
-                f"EMAIL QUEUE: {emails}     "
-                f"YOUTUBE QUEUE: {comments}     JOBS: {self.db.job_count()}"
-            )
-
+                f"TASKS: {tasks}     FINANCES: ${total:.2f}\n"
+                f"EMAIL QUEUE: {emails}     YOUTUBE QUEUE: {comments}     "
+                f"JOBS: {self.db.job_count()}")
             logs = self.db.recent_logs()
-
             if logs:
-
                 lines = []
-
                 for timestamp, message in logs:
-
-                    timestamp = timestamp.replace(
-                        "T",
-                        " "
-                    )[:16]
-
-                    lines.append(
-                        f"{timestamp}\n{message}"
-                    )
-
-                self.log_output.text = (
-                    "\n\n".join(lines)
-                )
-
+                    lines.append(timestamp.replace("T", " ")[:16] + "\n" + message)
+                self.log_output.text = "\n\n".join(lines)
             else:
-
-                self.log_output.text = (
-                    "No activity yet."
-                )
-
+                self.log_output.text = "No activity yet."
         except Exception as e:
+            self.log_output.text = "Dashboard error: " + str(e)
 
-            self.log_output.text = (
-                f"Dashboard error: {e}"
-            )
+    def on_start(self):
+        self.init_tts()
+        try:
+            if CRASH_PATH[0] and os.path.exists(CRASH_PATH[0]):
+                with open(CRASH_PATH[0]) as f:
+                    txt = f.read()
+                self.db.log("ERROR crash: " + txt[-180:].replace("\n", " "))
+                os.remove(CRASH_PATH[0])
+                self.add_msg("Heads up: the app hit an error last time. "
+                             "Type errors to see it.", False)
+        except Exception:
+            pass
+        if self.cfg.get("auto"):
+            Clock.schedule_once(lambda dt: self.on_mic(None), 2.5)
+
+    def on_pause(self):
+        return True
 
     def on_stop(self):
-
         if hasattr(self, "db"):
             self.db.close()
 
 
 if __name__ == "__main__":
     BusinessDashboard().run()
-
