@@ -2,6 +2,7 @@
 android.accept_sdk_license = True
 
 title = RAMBO AI
+icon.filename = %(source.dir)s/icon.png
 
 package.name = businessdashboard
 
@@ -11,7 +12,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.3.9
+version = 1.3.10
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy
 
