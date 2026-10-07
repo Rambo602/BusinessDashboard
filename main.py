@@ -1,4 +1,4 @@
-__version__ = "1.3.5"
+__version__ = "1.3.6"
 # Pocket Pal v1.2 (chat screen, voice, talk back, memory, local-first router)
 
 import os
@@ -93,7 +93,8 @@ def http_get(url):
     conn.setRequestMethod("GET")
     conn.setConnectTimeout(20000)
     conn.setReadTimeout(30000)
-    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36")
+    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    conn.setRequestProperty("Cookie", "CONSENT=YES+1; SOCS=CAI")
     conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
     code = conn.getResponseCode()
     stream = conn.getInputStream() if code < 400 else conn.getErrorStream()
@@ -1420,11 +1421,15 @@ class BusinessDashboard(App):
         vid, msg = "", ""
         try:
             code, html = http_get("https://www.youtube.com/results?search_query=" + quote(q))
-            m = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
-            if code == 200 and m:
-                vid = m.group(1)
-            else:
-                msg = "youtube search " + str(code)
+            for pat in (r'"videoRenderer":\{"videoId":"([A-Za-z0-9_-]{11})"',
+                        r'"videoId":"([A-Za-z0-9_-]{11})"',
+                        r'\\x22videoId\\x22:\\x22([A-Za-z0-9_-]{11})\\x22'):
+                m = re.search(pat, html)
+                if m:
+                    vid = m.group(1)
+                    break
+            if not vid:
+                msg = "status " + str(code) + ", " + str(len(html)) + " bytes, no video id"
         except Exception as e:
             msg = str(e)
         Clock.schedule_once(lambda dt: self._yt_open(q, vid, msg), 0)
@@ -1438,7 +1443,7 @@ class BusinessDashboard(App):
                 self.reply("Playing the top result for " + q + ".")
             else:
                 self.pa("open https://www.youtube.com/results?search_query=" + quote(q))
-                self.reply("Could not pick a video, so I opened the search results.")
+                self.reply("Could not pick a video (" + msg[:90] + "), so I opened the search results.")
         except Exception as e:
             self.err("yt open", e)
 
