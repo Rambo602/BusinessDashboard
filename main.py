@@ -1,4 +1,4 @@
-__version__ = "1.2.1"
+__version__ = "1.3.1"
 # Pocket Pal v1.2 (chat screen, voice, talk back, memory, local-first router)
 
 import os
@@ -274,6 +274,26 @@ class Database:
         )
         """)
 
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            goal TEXT,
+            status TEXT,
+            created_at TEXT
+        )
+        """)
+
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS project_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER,
+            kind TEXT,
+            text TEXT,
+            created_at TEXT
+        )
+        """)
+
         self.conn.commit()
 
     def log(self, message):
@@ -451,7 +471,7 @@ class Database:
             (n,)).fetchall()
 
     BACKUP_TABLES = ["tasks", "finances", "gmail_queue", "youtube_queue",
-                     "website_cache", "jobs", "memory"]
+                     "website_cache", "jobs", "memory", "projects", "project_log"]
 
     def export_all(self):
         out = {"pocketpal_backup": 1,
@@ -483,6 +503,54 @@ class Database:
                 total += 1
         self.conn.commit()
         return total
+
+    def add_project(self, name, goal):
+        cur = self.conn.execute(
+            "INSERT INTO projects(name, goal, status, created_at) VALUES (?, ?, ?, ?)",
+            (name, goal, "new", datetime.now().isoformat()))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def projects(self):
+        return self.conn.execute(
+            "SELECT id, name, goal, status FROM projects ORDER BY id DESC").fetchall()
+
+    def get_project(self, pid):
+        return self.conn.execute(
+            "SELECT id, name, goal, status FROM projects WHERE id=?", (pid,)).fetchone()
+
+    def set_pstatus(self, pid, status):
+        self.conn.execute("UPDATE projects SET status=? WHERE id=?", (status, pid))
+        self.conn.commit()
+
+    def add_plog(self, pid, kind, text):
+        self.conn.execute(
+            "INSERT INTO project_log(project_id, kind, text, created_at) VALUES (?, ?, ?, ?)",
+            (pid, kind, text, datetime.now().isoformat()))
+        self.conn.commit()
+
+    def plog(self, pid, n=20):
+        rows = self.conn.execute(
+            "SELECT created_at, kind, text FROM project_log WHERE project_id=? "
+            "ORDER BY id DESC LIMIT ?", (pid, n)).fetchall()
+        return list(reversed(rows))
+
+    def task_rows(self, n=30):
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(tasks)")]
+        col = None
+        for c in ("task", "title", "name", "description", "text"):
+            if c in cols:
+                col = c
+                break
+        if col is None:
+            col = cols[1] if len(cols) > 1 else cols[0]
+        rows = self.conn.execute(
+            "SELECT id, " + col + " FROM tasks ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        return [(r[0], str(r[1])) for r in rows]
+
+    def del_task(self, tid):
+        self.conn.execute("DELETE FROM tasks WHERE id=?", (tid,))
+        self.conn.commit()
 
     def close(self):
         self.conn.close()
@@ -575,19 +643,28 @@ class BusinessDashboard(App):
         self.tts = None
         self.tts_ok = False
         self.thinking = None
+        self.cur_proj = None
+        self.auto_on = False
+        self.auto_steps = 0
 
         root = BoxLayout(orientation="vertical", padding=6, spacing=6)
         self.body = BoxLayout()
         root.add_widget(self.body)
+        self.flash_lbl = Label(text="Ready.", color=GREEN, font_size="13sp",
+                               size_hint_y=None, height=26, shorten=True,
+                               halign="center", valign="middle")
+        self.flash_lbl.bind(size=lambda w, v: setattr(w, "text_size", v))
+        root.add_widget(self.flash_lbl)
         bar = BoxLayout(size_hint_y=None, height=58, spacing=5)
         self.tab_btns = {}
         self.tab_views = {}
         tabs = [("TALK", self.build_chat, CYAN), ("PHONE", self.build_phone, GREEN),
-                ("LOOKUP", self.build_lookup, AMBER), ("TASKS", self.build_tasks, MAGENTA),
+                ("LOOKUP", self.build_lookup, AMBER), ("PROJECT", self.build_projects, MAGENTA),
+                ("TASKS", self.build_tasks, GREEN),
                 ("MORE", self.build_more, CYAN)]
         for name, fn, col in tabs:
             self.tab_views[name] = fn()
-            b = NeonButton(glow=col, text=name, font_size="13sp")
+            b = NeonButton(glow=col, text=name, font_size="11sp")
             b.bind(on_press=lambda inst, n=name: self.switch(n))
             self.tab_btns[name] = b
             bar.add_widget(b)
@@ -653,7 +730,7 @@ class BusinessDashboard(App):
 
     def _btn(self, c, t, cb, col=CYAN, h=48):
         b = NeonButton(glow=col, text=t, size_hint_y=None, height=h)
-        b.bind(on_press=cb)
+        b.bind(on_press=self._wrap(cb))
         c.add_widget(b)
         return b
 
@@ -661,7 +738,7 @@ class BusinessDashboard(App):
         r = BoxLayout(size_hint_y=None, height=48, spacing=6)
         r.add_widget(inp)
         b = NeonButton(glow=col, text=label, size_hint_x=0.32)
-        b.bind(on_press=cb)
+        b.bind(on_press=self._wrap(cb))
         r.add_widget(b)
         c.add_widget(r)
 
@@ -707,12 +784,17 @@ class BusinessDashboard(App):
         return v
 
     def phone_go(self, cmd):
+        if cmd.strip() in ("timer", "alarm", "call", "text", "search"):
+            self.phone_status.text = "Fill in the box first."
+            self.flash("Fill in the box first.")
+            return
         try:
             res = self.pa(cmd)
         except Exception as e:
             self.err("phone tab", e)
             res = "Error: " + str(e)[:100]
         self.phone_status.text = res
+        self.flash(res)
 
     def build_phone(self):
         sv, c = self._scroll()
@@ -789,7 +871,14 @@ class BusinessDashboard(App):
         self._head(c, "TASKS", MAGENTA)
         self.task_input = mk_input("Enter task")
         c.add_widget(self.task_input)
-        self._btn(c, "ADD TASK", self.add_task, MAGENTA)
+        self._btn(c, "ADD TASK", self.add_task_ref, MAGENTA)
+        self._head(c, "YOUR TASKS  (RUN = auto work on it)", MAGENTA)
+        self.task_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
+        self.task_list.bind(minimum_height=self.task_list.setter("height"))
+        c.add_widget(self.task_list)
+        self._task_sig = None
+        Clock.schedule_interval(lambda dt: self.sync_tasks(), 3)
+        Clock.schedule_once(lambda dt: self.sync_tasks(True), 0.5)
         self._head(c, "FINANCES", GREEN)
         self.finance_description = mk_input("Description")
         c.add_widget(self.finance_description)
@@ -803,6 +892,11 @@ class BusinessDashboard(App):
 
     def build_more(self):
         sv, c = self._scroll()
+        self._head(c, "SELF TEST", GREEN)
+        self._btn(c, "TEST EVERYTHING", self.run_tests_btn, GREEN, 56)
+        self._btn(c, "TEST GEMINI", self.test_gemini, MAGENTA)
+        self.test_out = autosize(Label(text="Tap TEST EVERYTHING.", color=TXT))
+        c.add_widget(self.test_out)
         self._head(c, "GMAIL", CYAN)
         self.email_to = mk_input("Recipient email")
         c.add_widget(self.email_to)
@@ -828,6 +922,425 @@ class BusinessDashboard(App):
         self.log_output = autosize(Label(text="Ready.", color=TXT))
         c.add_widget(self.log_output)
         return sv
+
+    # ---------- projects and auto run ----------
+
+    def build_projects(self):
+        sv, c = self._scroll()
+        self._head(c, "NEW PROJECT", MAGENTA)
+        self.proj_name = mk_input("Project name (business, game, workout...)")
+        c.add_widget(self.proj_name)
+        self.proj_goal = mk_input("Goal: what should it build or do?", multiline=True, height=100)
+        c.add_widget(self.proj_goal)
+        self._btn(c, "CREATE PROJECT", self.new_project, MAGENTA)
+
+        self._head(c, "YOUR PROJECTS (tap to open)", CYAN)
+        self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
+        self.proj_list.bind(minimum_height=self.proj_list.setter("height"))
+        c.add_widget(self.proj_list)
+
+        self._head(c, "SELECTED PROJECT", GREEN)
+        self.proj_title = autosize(Label(text="None selected.", color=TXT, bold=True))
+        c.add_widget(self.proj_title)
+        self.proj_status = autosize(Label(text="", color=GREEN))
+        c.add_widget(self.proj_status)
+        self._btn(c, "AUTO RUN", self.auto_start, GREEN, 56)
+        self._btn(c, "PAUSE", lambda *a: self.auto_stop("Paused."), AMBER)
+        self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
+        c.add_widget(self.proj_note)
+        self._btn(c, "ADD NOTE / ANSWER", self.add_note, CYAN)
+        self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
+
+        self._head(c, "PROJECT LOG", AMBER)
+        self.proj_log = autosize(Label(text="", color=TXT))
+        c.add_widget(self.proj_log)
+        self.refresh_projects()
+        Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
+        return sv
+
+    def refresh_projects(self):
+        self.proj_list.clear_widgets()
+        rows = self.db.projects()
+        if not rows:
+            self.proj_list.add_widget(autosize(Label(text="No projects yet.", color=TXT)))
+        for pid, name, goal, status in rows:
+            b = NeonButton(glow=CYAN, text=name + "  [" + status + "]",
+                           size_hint_y=None, height=48)
+            b.bind(on_press=lambda inst, p=pid: self.select_project(p))
+            self.proj_list.add_widget(b)
+
+    def select_project(self, pid):
+        self.cur_proj = pid
+        self.auto_on = False
+        self.update_proj_view()
+
+    def new_project(self, *a):
+        name = self.proj_name.text.strip()
+        goal = self.proj_goal.text.strip()
+        if not name:
+            self.proj_status.text = "Give the project a name first."
+            return
+        pid = self.db.add_project(name, goal)
+        self.db.add_plog(pid, "you", "Goal: " + (goal or "(none yet)"))
+        self.proj_name.text = ""
+        self.proj_goal.text = ""
+        self.refresh_projects()
+        self.select_project(pid)
+
+    def update_proj_view(self):
+        try:
+            if self.cur_proj is None:
+                return
+            p = self.db.get_project(self.cur_proj)
+            if not p:
+                return
+            self.proj_title.text = p[1] + "\nGoal: " + (p[2] or "(none)")
+            self.proj_status.text = "Status: " + p[3] + ("  (auto run ON)" if self.auto_on else "")
+            lines = []
+            for ts, kind, text in self.db.plog(self.cur_proj, 20):
+                who = {"pal": "Pal", "you": "You", "run": "Ran", "ask": "ASKS"}.get(kind, kind)
+                lines.append(ts[5:16].replace("T", " ") + " " + who + ": " + text)
+            self.proj_log.text = "\n\n".join(lines) if lines else "No log yet."
+        except Exception as e:
+            self.err("proj view", e)
+
+    def add_note(self, *a):
+        if self.cur_proj is None:
+            return
+        t = self.proj_note.text.strip()
+        if not t:
+            return
+        self.proj_note.text = ""
+        self.db.add_plog(self.cur_proj, "you", t)
+        p = self.db.get_project(self.cur_proj)
+        self.update_proj_view()
+        if p and p[3] == "waiting":
+            self.auto_start()
+
+    def mark_done(self, *a):
+        if self.cur_proj is None:
+            return
+        self.auto_on = False
+        self.db.set_pstatus(self.cur_proj, "done")
+        self.refresh_projects()
+        self.update_proj_view()
+
+    def notify(self, title, text):
+        try:
+            from jnius import autoclass
+            PA = autoclass("org.kivy.android.PythonActivity")
+            ctx = PA.mActivity
+            Context = autoclass("android.content.Context")
+            nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
+            Builder = autoclass("android.app.Notification$Builder")
+            if autoclass("android.os.Build$VERSION").SDK_INT >= 26:
+                NC = autoclass("android.app.NotificationChannel")
+                nm.createNotificationChannel(NC("pocketpal", "Pocket Pal", 3))
+                b = Builder(ctx, "pocketpal")
+            else:
+                b = Builder(ctx)
+            PI = autoclass("android.app.PendingIntent")
+            i = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName())
+            pi = PI.getActivity(ctx, 0, i, PI.FLAG_IMMUTABLE | PI.FLAG_UPDATE_CURRENT)
+            b.setSmallIcon(ctx.getApplicationInfo().icon)
+            b.setContentTitle(title)
+            b.setContentText(text[:200])
+            b.setContentIntent(pi)
+            b.setAutoCancel(True)
+            nm.notify(1, b.build())
+        except Exception as e:
+            self.err("notify", e)
+
+    def auto_start(self, *a):
+        if self.cur_proj is None:
+            self.proj_status.text = "Open a project first."
+            return
+        if self.auto_on:
+            return
+        if not os.path.exists(self.key_path):
+            self.proj_status.text = "Auto run needs a Gemini key. On TALK type: setkey YOUR_KEY"
+            return
+        self.auto_on = True
+        self.auto_steps = 0
+        self.db.set_pstatus(self.cur_proj, "running")
+        self.refresh_projects()
+        self.update_proj_view()
+        Clock.schedule_once(self.auto_next, 0.5)
+
+    def auto_stop(self, why):
+        was = self.auto_on
+        self.auto_on = False
+        if self.cur_proj is not None:
+            p = self.db.get_project(self.cur_proj)
+            if p and p[3] == "running":
+                self.db.set_pstatus(self.cur_proj, "paused")
+            if was:
+                self.db.add_plog(self.cur_proj, "run", why)
+        self.refresh_projects()
+        self.update_proj_view()
+
+    def auto_next(self, dt):
+        if not self.auto_on or self.cur_proj is None:
+            return
+        if self.auto_steps >= 15:
+            self.auto_stop("Reached 15 steps in this run. Tap AUTO RUN to keep going.")
+            return
+        wait = int(self.cool_until - time.time())
+        if wait > 0:
+            Clock.schedule_once(self.auto_next, wait + 2)
+            return
+        try:
+            with open(self.key_path) as f:
+                key = f.read().strip()
+        except Exception:
+            key = ""
+        if not key:
+            self.auto_stop("No Gemini key.")
+            return
+        pid = self.cur_proj
+        p = self.db.get_project(pid)
+        sysmsg = (
+            "You are Pocket Pal, working on a long project for the user, one small step per turn. "
+            "Project: " + p[1] + ". Goal: " + (p[2] or "not stated") + ". "
+            "Each turn do ONE useful step: produce real content (plan, research notes, draft, "
+            "checklist, design, schedule, copy) or give phone commands. Do not repeat earlier steps. "
+            "Reply ONLY with JSON: {\"note\": \"what you did or produced\", \"commands\": [], "
+            "\"question\": \"\", \"done\": false}. Put a question in \"question\" if you need the "
+            "user's input or hit a problem (then leave commands empty). Set done true when the goal "
+            "is finished. Allowed commands: open <app or website>, search <text>, timer <minutes>, "
+            "alarm HH:MM. Max 3 commands. You cannot tap inside other apps."
+        )
+        facts = self.db.memories()
+        if facts:
+            sysmsg += " Known facts about the user: " + "; ".join(facts) + "."
+        sysmsg += " Now: " + datetime.now().strftime("%A %B %d %Y %I:%M %p") + "."
+        lines = []
+        for ts, kind, text in self.db.plog(pid, 12):
+            lines.append(kind.upper() + ": " + text[:500])
+        prompt = "Project log so far:\n" + "\n".join(lines) + "\n\nDo the next step."
+        payload = {
+            "systemInstruction": {"parts": [{"text": sysmsg}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        }
+        body = json.dumps(payload).encode()
+        threading.Thread(target=self._auto_thread, args=(key, body, pid), daemon=True).start()
+
+    def _auto_thread(self, key, body, pid):
+        code, raw, err = 0, "", ""
+        try:
+            code, raw = http_post(
+                GEMINI_URL,
+                {"Content-Type": "application/json", "x-goog-api-key": key}, body)
+        except Exception as e:
+            err = str(e)
+        Clock.schedule_once(lambda dt: self.on_auto(code, raw, err, pid), 0)
+
+    def on_auto(self, code, raw, err, pid):
+        if not self.auto_on or pid != self.cur_proj:
+            return
+        if err:
+            self.err("auto net", err)
+            self.auto_stop("No connection. Paused.")
+            return
+        if code == 429:
+            self.cool_until = time.time() + 60
+            self.db.add_plog(pid, "run", "Gemini free limit hit. Retrying in about a minute.")
+            self.update_proj_view()
+            Clock.schedule_once(self.auto_next, 62)
+            return
+        if code != 200:
+            self.err("auto " + str(code), raw[:150])
+            self.auto_stop("Gemini error " + str(code) + ". Paused.")
+            return
+        note, cmds, question, done = "", [], "", False
+        try:
+            txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
+            note = txt
+            t2 = txt
+            if t2.startswith("```"):
+                t2 = re.sub(r"^```(?:json)?|```$", "", t2, flags=re.M).strip()
+            d = json.loads(t2)
+            if isinstance(d, dict):
+                note = str(d.get("note", "")).strip()
+                cmds = [str(x) for x in d.get("commands", [])][:3]
+                question = str(d.get("question", "")).strip()
+                done = bool(d.get("done", False))
+        except Exception:
+            pass
+        if not note and not question and not cmds:
+            self.auto_stop("Gemini gave no usable step. Paused.")
+            return
+        if note:
+            self.db.add_plog(pid, "pal", note)
+        self.auto_steps += 1
+        for n, cm in enumerate(cmds):
+            Clock.schedule_once(lambda dt, cm=cm: self._auto_cmd(pid, cm), 1 + 1.5 * n)
+        pname = self.db.get_project(pid)[1]
+        if question:
+            self.db.add_plog(pid, "ask", question)
+            self.db.set_pstatus(pid, "waiting")
+            self.auto_on = False
+            self.notify("Pocket Pal needs you: " + pname, question)
+            self.speak(question)
+        elif done:
+            self.db.set_pstatus(pid, "done")
+            self.auto_on = False
+            self.notify("Project finished: " + pname, note[:150])
+            self.speak("Project " + pname + " is finished.")
+        else:
+            Clock.schedule_once(self.auto_next, 25 + 1.5 * len(cmds))
+        self.refresh_projects()
+        self.update_proj_view()
+
+    def _auto_cmd(self, pid, cm):
+        try:
+            res = self.phone_action(cm)
+            self.db.add_plog(pid, "run", cm + " -> " + res)
+        except Exception as e:
+            self.err("auto cmd", e)
+
+    # ---------- feedback, task list, self test ----------
+
+    def flash(self, msg):
+        try:
+            self.flash_lbl.text = str(msg).replace("\n", " ")[:120]
+        except Exception:
+            pass
+
+    def _lastlog(self):
+        try:
+            rows = self.db.recent_logs()
+            return rows[0][1] if rows else ""
+        except Exception:
+            return ""
+
+    def _wrap(self, cb):
+        def run(*a):
+            try:
+                before = self._lastlog()
+                cb(*a)
+                after = self._lastlog()
+                self.flash(after if after != before else "Done.")
+            except Exception as e:
+                self.err("button", e)
+                self.flash("Error: " + str(e)[:90])
+        return run
+
+    def add_task_ref(self, *a):
+        self.add_task(None)
+        self.sync_tasks(True)
+
+    def sync_tasks(self, force=False):
+        try:
+            rows = self.db.task_rows()
+        except Exception as e:
+            self.err("task list", e)
+            return
+        sig = tuple(rows)
+        if sig == self._task_sig and not force:
+            return
+        self._task_sig = sig
+        self.task_list.clear_widgets()
+        if not rows:
+            self.task_list.add_widget(autosize(Label(text="No tasks yet.", color=TXT)))
+        for tid, text in rows:
+            r = BoxLayout(size_hint_y=None, height=56, spacing=5)
+            l = Label(text=text, color=TXT, halign="left", valign="middle",
+                      shorten=True, shorten_from="right", size_hint_x=0.5)
+            l.bind(size=lambda w, v: setattr(w, "text_size", v))
+            run = NeonButton(glow=GREEN, text="RUN", size_hint_x=0.25)
+            run.bind(on_press=lambda inst, t=text: self.run_task(t))
+            dn = NeonButton(glow=AMBER, text="DONE", size_hint_x=0.25)
+            dn.bind(on_press=lambda inst, i=tid: self.finish_task(i))
+            r.add_widget(l)
+            r.add_widget(run)
+            r.add_widget(dn)
+            self.task_list.add_widget(r)
+
+    def run_task(self, text):
+        name = text[:40]
+        pid = self.db.add_project(name, text)
+        self.db.add_plog(pid, "you", "Goal: " + text)
+        self.refresh_projects()
+        self.select_project(pid)
+        self.switch("PROJECT")
+        self.auto_start()
+        self.flash("Running: " + name)
+
+    def finish_task(self, tid):
+        try:
+            self.db.del_task(tid)
+        except Exception as e:
+            self.err("finish task", e)
+        self.sync_tasks(True)
+        self.flash("Task marked done.")
+
+    def run_tests(self):
+        out = []
+
+        def ok(name, cond, extra=""):
+            out.append(("PASS " if cond else "FAIL ") + name + ((" - " + extra) if extra else ""))
+
+        try:
+            self.db.add_memory("selftest zz")
+            ok("memory save and forget", self.db.forget("selftest zz") >= 1)
+        except Exception as e:
+            ok("memory", False, str(e)[:60])
+        try:
+            self.db.add_task("selftest zz")
+            hit = [r for r in self.db.task_rows() if r[1] == "selftest zz"]
+            for r in hit:
+                self.db.del_task(r[0])
+            ok("tasks add, list, delete", bool(hit))
+        except Exception as e:
+            ok("tasks", False, str(e)[:60])
+        try:
+            pid = self.db.add_project("selftest zz", "x")
+            self.db.add_plog(pid, "you", "t")
+            good = len(self.db.plog(pid)) == 1
+            self.db.conn.execute("DELETE FROM project_log WHERE project_id=?", (pid,))
+            self.db.conn.execute("DELETE FROM projects WHERE id=?", (pid,))
+            self.db.conn.commit()
+            ok("projects save", good)
+        except Exception as e:
+            ok("projects", False, str(e)[:60])
+        try:
+            ok("finances total", isinstance(self.db.finance_total(), (int, float)))
+        except Exception as e:
+            ok("finances", False, str(e)[:60])
+        calls = []
+        self.pa = lambda c: (calls.append(c) or "ok")
+        try:
+            for ph in ("open youtube and play fade to black",
+                       "open google and show me pokemon go events",
+                       "timer for 10 minutes", "set alarm for 7:30 pm",
+                       "search cats", "play lo fi", "open gmail"):
+                del calls[:]
+                try:
+                    self.local_route(ph, ph.lower())
+                except Exception as e:
+                    calls.append("ERR " + str(e)[:30])
+                ok("understands: " + ph, len(calls) == 1 and not calls[0].startswith("ERR"),
+                   calls[0][:45] if calls else "no match")
+        finally:
+            self.__dict__.pop("pa", None)
+        ok("voice reply engine ready", bool(self.tts_ok))
+        ok("Gemini key saved", os.path.exists(self.key_path),
+           "" if os.path.exists(self.key_path) else "type: setkey YOUR_KEY")
+        self.notify("Pocket Pal test", "If you see this, notifications work.")
+        out.append("INFO notification sent - check your notification shade")
+        out.append("MANUAL tap each PHONE button, then TEST GEMINI")
+        return "\n".join(out)
+
+    def run_tests_btn(self, *a):
+        s = self.run_tests()
+        self.test_out.text = s
+        self.flash("%d test(s) failed" % s.count("FAIL ") if "FAIL " in s else "All tests passed.")
+
+    def test_gemini(self, *a):
+        self.switch("TALK")
+        self.handle("ask reply with the single word OK", False)
 
     # ---------- chat helpers ----------
 
@@ -860,7 +1373,7 @@ class BusinessDashboard(App):
             self.add_msg(text, role == "user")
         self.hist = [("user" if r == "user" else "model", t) for r, t in rows][-8:]
         if not rows:
-            self.add_msg("Hi! Tap VOICE COMMAND and say something like "
+            self.add_msg("Hi! Tap the green button and say something like "
                          "\"open youtube\" or \"set a timer for 10 minutes\". "
                          "Type help for more.", False)
         if not os.path.exists(self.key_path):
@@ -1249,6 +1762,8 @@ class BusinessDashboard(App):
             return ("I remember: " + "; ".join(facts)) if facts else "I have nothing saved yet. Say: remember ..."
         if low in ("help", "what can you do", "commands"):
             return HELP
+        if low in ("test", "self test", "run tests", "test everything"):
+            return self.run_tests()
         if low == "backup":
             return self.do_backup()
         if low == "restore":
@@ -1284,6 +1799,15 @@ class BusinessDashboard(App):
                    "show my finances", "how much did i spend"):
             return "Your finance total is $%.2f" % self.db.finance_total()
 
+        m = re.match(r"^(?:open|launch|go to)\s+(.+?)\s+and\s+(play|search(?: for)?|look up|find|show me|show|google|watch)\s+(.+)$", low)
+        if m:
+            app, verb, q = m.group(1), m.group(2), m.group(3)
+            if "youtube" in app or verb in ("play", "watch"):
+                return self.pa("open https://www.youtube.com/results?search_query=" + quote(q))
+            return self.pa("search " + q)
+        m = re.match(r"^(?:play|watch)\s+(.+)$", low)
+        if m:
+            return self.pa("open https://www.youtube.com/results?search_query=" + quote(m.group(1)))
         # open X and search Y
         m = re.match(r"^(?:open|launch)\s+(.+?)\s+and\s+(?:search|look up|google)(?:\s+for)?\s+(.+)$", low)
         if m:
@@ -1483,6 +2007,11 @@ class BusinessDashboard(App):
 
     def on_start(self):
         self.init_tts()
+        try:
+            from android.permissions import request_permissions
+            request_permissions(["android.permission.POST_NOTIFICATIONS"])
+        except Exception:
+            pass
         try:
             if CRASH_PATH[0] and os.path.exists(CRASH_PATH[0]):
                 with open(CRASH_PATH[0]) as f:
