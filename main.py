@@ -784,6 +784,16 @@ class BusinessDashboard(App):
                         return "app not found: " + key
                     act.startActivity(i)
                     return "opened " + key
+                if "." not in key and "://" not in key:
+                    pm = act.getPackageManager()
+                    for ai in pm.getInstalledApplications(0).toArray():
+                        label = str(pm.getApplicationLabel(ai))
+                        if key in label.lower():
+                            li = pm.getLaunchIntentForPackage(ai.packageName)
+                            if li is not None:
+                                act.startActivity(li)
+                                return "opened " + label
+                    return "no app named " + key
                 url = arg if "://" in arg else "https://" + arg
                 act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                 return "opened " + url
