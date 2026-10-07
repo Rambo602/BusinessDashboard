@@ -2,6 +2,8 @@ __version__ = "0.1.0"
 
 import os
 import sqlite3
+import json
+import threading
 import urllib.request
 from datetime import datetime
 
@@ -829,8 +831,47 @@ class BusinessDashboard(App):
         except Exception as e:
             return "error: " + str(e)
 
+    def gemini_ask(self, q):
+        try:
+            kp = os.path.join(self.user_data_dir, "gemini.key")
+            key = open(kp).read().strip()
+        except Exception:
+            key = ""
+        if not key:
+            msg = "No key yet. Type: setkey YOUR_KEY"
+        else:
+            try:
+                import ssl
+                try:
+                    import certifi
+                    ctx = ssl.create_default_context(cafile=certifi.where())
+                except Exception:
+                    ctx = ssl.create_default_context()
+                body = json.dumps({"contents": [{"parts": [{"text": q}]}]}).encode()
+                req = urllib.request.Request(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+                    data=body,
+                    headers={"Content-Type": "application/json", "x-goog-api-key": key})
+                r = json.loads(urllib.request.urlopen(req, timeout=60, context=ctx).read())
+                msg = "Gemini: " + r["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as e:
+                msg = "Gemini error: " + str(e)
+        Clock.schedule_once(lambda dt: (self.db.log(msg), self.refresh()), 0)
+
     def add_job(self, instance):
         text = self.job_input.text.strip()
+        low = text.lower()
+        if low.startswith("setkey ") or low.startswith("ask "):
+            self.job_input.text = ""
+            if low.startswith("setkey "):
+                kp = os.path.join(self.user_data_dir, "gemini.key")
+                open(kp, "w").write(text[7:].strip())
+                self.db.log("Gemini key saved on this phone")
+            else:
+                self.db.log("Asking Gemini...")
+                threading.Thread(target=self.gemini_ask, args=(text[4:].strip(),), daemon=True).start()
+            self.refresh()
+            return
         if text:
             target = "phone"
             if text.lower().startswith("pc:"):
