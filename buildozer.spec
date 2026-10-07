@@ -11,9 +11,9 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 0.1.0
+version = 1.1
 
-requirements = python3,kivy,openssl,certifi
+requirements = python3,kivy
 
 orientation = portrait
 

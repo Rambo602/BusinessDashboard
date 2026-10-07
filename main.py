@@ -9,11 +9,36 @@ from datetime import datetime
 
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.core.window import Window
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
 from kivy.uix.scrollview import ScrollView
+
+
+SYS = 'You control an Android phone. Reply ONLY JSON: {"commands": [], "reply": "short text"}. Allowed commands: open <app name or website>, search <text>, call <number>, text <number> <message>, timer <minutes>, alarm HH:MM. Use only what the user asked for. Max 5 commands.'
+
+
+def http_post(url, headers, body):
+    from jnius import autoclass
+    URL = autoclass("java.net.URL")
+    Scanner = autoclass("java.util.Scanner")
+    conn = URL(url).openConnection()
+    conn.setRequestMethod("POST")
+    conn.setConnectTimeout(30000)
+    conn.setReadTimeout(60000)
+    for k, v in headers.items():
+        conn.setRequestProperty(k, v)
+    conn.setDoOutput(True)
+    out = conn.getOutputStream()
+    out.write(body)
+    out.close()
+    code = conn.getResponseCode()
+    stream = conn.getInputStream() if code < 400 else conn.getErrorStream()
+    sc = Scanner(stream, "UTF-8").useDelimiter("\\A")
+    text = sc.next() if sc.hasNext() else ""
+    return code, text
 
 
 class Database:
@@ -299,6 +324,7 @@ class BusinessDashboard(App):
     def build(self):
 
         self.title = "Business Command Center"
+        Window.softinput_mode = "below_target"
 
         os.makedirs(
             self.user_data_dir,
@@ -364,7 +390,7 @@ class BusinessDashboard(App):
             )
         )
 
-        self.task_input = TextInput(
+        self.task_input = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Enter task",
             multiline=False,
             size_hint_y=None,
@@ -398,7 +424,7 @@ class BusinessDashboard(App):
             )
         )
 
-        self.finance_description = TextInput(
+        self.finance_description = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Description",
             multiline=False,
             size_hint_y=None,
@@ -409,7 +435,7 @@ class BusinessDashboard(App):
             self.finance_description
         )
 
-        self.finance_amount = TextInput(
+        self.finance_amount = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Amount",
             multiline=False,
             input_filter="float",
@@ -421,7 +447,7 @@ class BusinessDashboard(App):
             self.finance_amount
         )
 
-        self.finance_category = TextInput(
+        self.finance_category = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Category",
             multiline=False,
             size_hint_y=None,
@@ -455,7 +481,7 @@ class BusinessDashboard(App):
             )
         )
 
-        self.email_to = TextInput(
+        self.email_to = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Recipient email",
             multiline=False,
             size_hint_y=None,
@@ -466,7 +492,7 @@ class BusinessDashboard(App):
             self.email_to
         )
 
-        self.email_subject = TextInput(
+        self.email_subject = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Subject",
             multiline=False,
             size_hint_y=None,
@@ -477,7 +503,7 @@ class BusinessDashboard(App):
             self.email_subject
         )
 
-        self.email_body = TextInput(
+        self.email_body = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Email message",
             multiline=True,
             size_hint_y=None,
@@ -523,7 +549,7 @@ class BusinessDashboard(App):
             )
         )
 
-        self.youtube_url = TextInput(
+        self.youtube_url = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Video URL",
             multiline=False,
             size_hint_y=None,
@@ -534,7 +560,7 @@ class BusinessDashboard(App):
             self.youtube_url
         )
 
-        self.youtube_comment = TextInput(
+        self.youtube_comment = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Comment",
             multiline=True,
             size_hint_y=None,
@@ -568,7 +594,7 @@ class BusinessDashboard(App):
             )
         )
 
-        self.website_url = TextInput(
+        self.website_url = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Website URL",
             multiline=False,
             size_hint_y=None,
@@ -620,7 +646,7 @@ class BusinessDashboard(App):
             height=110,
             spacing=8
         )
-        self.job_input = TextInput(
+        self.job_input = TextInput(input_type='text', keyboard_suggestions=True, 
             hint_text="Command (start with pc: for PC jobs)",
             multiline=False
         )
@@ -629,6 +655,18 @@ class BusinessDashboard(App):
         job_row.add_widget(self.job_input)
         job_row.add_widget(job_btn)
         root.add_widget(job_row)
+        mic = Button(text="SPEAK", size_hint_y=None, height=120)
+        mic.bind(on_press=self.listen)
+        root.add_widget(mic)
+        self.answer = Label(
+            text="Gemini answers show here",
+            size_hint_y=None, halign="left", valign="top")
+        self.answer.bind(
+            width=lambda w, v: setattr(w, "text_size", (v, None)),
+            texture_size=lambda w, v: setattr(w, "height", v[1] + 10))
+        ans_scroll = ScrollView(size_hint_y=None, height=220)
+        ans_scroll.add_widget(self.answer)
+        root.add_widget(ans_scroll)
 
         root.add_widget(scroll)
 
@@ -831,45 +869,95 @@ class BusinessDashboard(App):
         except Exception as e:
             return "error: " + str(e)
 
-    def gemini_ask(self, q):
+    def listen(self, instance):
         try:
-            kp = os.path.join(self.user_data_dir, "gemini.key")
-            key = open(kp).read().strip()
+            from jnius import autoclass
+            from android import activity
+            PA = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            RS = autoclass("android.speech.RecognizerIntent")
+            i = Intent(RS.ACTION_RECOGNIZE_SPEECH)
+            i.putExtra(RS.EXTRA_LANGUAGE_MODEL, RS.LANGUAGE_MODEL_FREE_FORM)
+            i.putExtra(RS.EXTRA_PROMPT, "Speak a command")
+            activity.unbind(on_activity_result=self.on_speech)
+            activity.bind(on_activity_result=self.on_speech)
+            PA.mActivity.startActivityForResult(i, 4242)
+        except Exception as e:
+            self.answer.text = "Mic error: " + str(e)
+
+    def on_speech(self, request, result, data):
+        if request != 4242 or result != -1 or data is None:
+            return
+        try:
+            from jnius import autoclass
+            RS = autoclass("android.speech.RecognizerIntent")
+            said = str(data.getStringArrayListExtra(RS.EXTRA_RESULTS).get(0)).strip()
+        except Exception as e:
+            Clock.schedule_once(lambda dt: setattr(self.answer, "text", "Mic error: " + str(e)), 0)
+            return
+        def go(dt):
+            t = said
+            if not t.lower().startswith(("ask ", "do ", "open ", "search ", "call ", "text ", "timer ", "alarm ")):
+                t = "do " + t
+            self.answer.text = "Heard: " + said
+            self.job_input.text = t
+            self.add_job(None)
+        Clock.schedule_once(go, 0)
+
+    def gemini_ask(self, q, agent=False):
+        cmds = []
+        try:
+            key = open(os.path.join(self.user_data_dir, "gemini.key")).read().strip()
         except Exception:
             key = ""
         if not key:
             msg = "No key yet. Type: setkey YOUR_KEY"
         else:
             try:
-                import ssl
-                try:
-                    import certifi
-                    ctx = ssl.create_default_context(cafile=certifi.where())
-                except Exception:
-                    ctx = ssl.create_default_context()
-                body = json.dumps({"contents": [{"parts": [{"text": q}]}]}).encode()
-                req = urllib.request.Request(
+                payload = {"contents": [{"parts": [{"text": q}]}]}
+                if agent:
+                    payload["systemInstruction"] = {"parts": [{"text": SYS}]}
+                    payload["generationConfig"] = {"responseMimeType": "application/json"}
+                code, raw = http_post(
                     "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
-                    data=body,
-                    headers={"Content-Type": "application/json", "x-goog-api-key": key})
-                r = json.loads(urllib.request.urlopen(req, timeout=60, context=ctx).read())
-                msg = "Gemini: " + r["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    {"Content-Type": "application/json", "x-goog-api-key": key},
+                    json.dumps(payload).encode())
+                if code != 200:
+                    msg = "Gemini error " + str(code) + ": " + raw[:300]
+                else:
+                    txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    if agent:
+                        d = json.loads(txt)
+                        cmds = [str(c) for c in d.get("commands", [])][:5]
+                        msg = "Gemini: " + str(d.get("reply", ""))
+                        if cmds:
+                            msg += " | Ran: " + "; ".join(cmds)
+                    else:
+                        msg = "Gemini: " + txt
             except Exception as e:
                 msg = "Gemini error: " + str(e)
-        Clock.schedule_once(lambda dt: (self.db.log(msg), self.refresh()), 0)
+        def done(dt):
+            self.db.log(msg)
+            self.answer.text = msg
+            for n, c in enumerate(cmds):
+                Clock.schedule_once(lambda d, c=c: self.db.log("Phone: " + c + " -> " + self.phone_action(c)), 2 * n + 1)
+            self.refresh()
+        Clock.schedule_once(done, 0)
 
     def add_job(self, instance):
         text = self.job_input.text.strip()
         low = text.lower()
-        if low.startswith("setkey ") or low.startswith("ask "):
+        if low.startswith(("setkey ", "ask ", "do ")):
             self.job_input.text = ""
             if low.startswith("setkey "):
                 kp = os.path.join(self.user_data_dir, "gemini.key")
                 open(kp, "w").write(text[7:].strip())
                 self.db.log("Gemini key saved on this phone")
             else:
+                agent = low.startswith("do ")
+                q = text[3:].strip() if agent else text[4:].strip()
                 self.db.log("Asking Gemini...")
-                threading.Thread(target=self.gemini_ask, args=(text[4:].strip(),), daemon=True).start()
+                threading.Thread(target=self.gemini_ask, args=(q, agent), daemon=True).start()
             self.refresh()
             return
         if text:
