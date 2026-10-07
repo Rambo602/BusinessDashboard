@@ -1,4 +1,4 @@
-__version__ = "1.3.1"
+__version__ = "1.3.3"
 # Pocket Pal v1.2 (chat screen, voice, talk back, memory, local-first router)
 
 import os
@@ -83,6 +83,35 @@ def http_post(url, headers, body):
     sc = Scanner(stream, "UTF-8").useDelimiter("\\A")
     text = sc.next() if sc.hasNext() else ""
     return code, text
+
+
+def http_get(url):
+    from jnius import autoclass, cast
+    URL = autoclass("java.net.URL")
+    Scanner = autoclass("java.util.Scanner")
+    conn = cast("java.net.HttpURLConnection", URL(url).openConnection())
+    conn.setRequestMethod("GET")
+    conn.setConnectTimeout(20000)
+    conn.setReadTimeout(30000)
+    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36")
+    conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+    code = conn.getResponseCode()
+    stream = conn.getInputStream() if code < 400 else conn.getErrorStream()
+    sc = Scanner(stream, "UTF-8").useDelimiter("\\A")
+    text = sc.next() if sc.hasNext() else ""
+    return code, text
+
+
+def gemini_post(key, body):
+    lite = GEMINI_URL.replace("gemini-flash-latest", "gemini-flash-lite-latest")
+    code, raw = 0, ""
+    for u in (GEMINI_URL, lite, GEMINI_URL, lite):
+        code, raw = http_post(
+            u, {"Content-Type": "application/json", "x-goog-api-key": key}, body)
+        if code not in (500, 503):
+            break
+        time.sleep(2)
+    return code, raw
 
 
 def autosize(lbl):
@@ -838,6 +867,7 @@ class BusinessDashboard(App):
     def look_search(self, kind):
         q = self.look_q()
         if not q:
+            self.flash("Type your question in the box first.")
             return
         if kind == "web":
             self.phone_go("search " + q)
@@ -892,6 +922,13 @@ class BusinessDashboard(App):
 
     def build_more(self):
         sv, c = self._scroll()
+        self._head(c, "GEMINI KEY", MAGENTA)
+        self.key_in = mk_input("Paste Gemini key here", password=True)
+        self._row(c, self.key_in, "SAVE", self.save_key, MAGENTA)
+        self.key_state = autosize(Label(
+            text="Key: SAVED" if os.path.exists(self.key_path) else "Key: NOT saved yet",
+            color=TXT))
+        c.add_widget(self.key_state)
         self._head(c, "SELF TEST", GREEN)
         self._btn(c, "TEST EVERYTHING", self.run_tests_btn, GREEN, 56)
         self._btn(c, "TEST GEMINI", self.test_gemini, MAGENTA)
@@ -1058,7 +1095,8 @@ class BusinessDashboard(App):
         if self.auto_on:
             return
         if not os.path.exists(self.key_path):
-            self.proj_status.text = "Auto run needs a Gemini key. On TALK type: setkey YOUR_KEY"
+            self.proj_status.text = "Auto run needs a Gemini key. Save it in MORE, GEMINI KEY."
+            self.flash("Need a Gemini key first: MORE tab, GEMINI KEY.")
             return
         self.auto_on = True
         self.auto_steps = 0
@@ -1129,9 +1167,7 @@ class BusinessDashboard(App):
     def _auto_thread(self, key, body, pid):
         code, raw, err = 0, "", ""
         try:
-            code, raw = http_post(
-                GEMINI_URL,
-                {"Content-Type": "application/json", "x-goog-api-key": key}, body)
+            code, raw = gemini_post(key, body)
         except Exception as e:
             err = str(e)
         Clock.schedule_once(lambda dt: self.on_auto(code, raw, err, pid), 0)
@@ -1311,6 +1347,7 @@ class BusinessDashboard(App):
             ok("finances", False, str(e)[:60])
         calls = []
         self.pa = lambda c: (calls.append(c) or "ok")
+        self.yt_play = lambda q: (calls.append("yt_play " + q) or "ok")
         try:
             for ph in ("open youtube and play fade to black",
                        "open google and show me pokemon go events",
@@ -1325,6 +1362,7 @@ class BusinessDashboard(App):
                    calls[0][:45] if calls else "no match")
         finally:
             self.__dict__.pop("pa", None)
+            self.__dict__.pop("yt_play", None)
         ok("voice reply engine ready", bool(self.tts_ok))
         ok("Gemini key saved", os.path.exists(self.key_path),
            "" if os.path.exists(self.key_path) else "type: setkey YOUR_KEY")
@@ -1341,6 +1379,55 @@ class BusinessDashboard(App):
     def test_gemini(self, *a):
         self.switch("TALK")
         self.handle("ask reply with the single word OK", False)
+
+    # ---------- play the top YouTube result ----------
+
+    def save_key(self, *a):
+        t = self.key_in.text.strip()
+        if not t:
+            self.flash("Paste the key first.")
+            return
+        try:
+            with open(self.key_path, "w") as f:
+                f.write(t)
+            self.key_in.text = ""
+            self.key_state.text = "Key: SAVED"
+            self.flash("Key saved on this phone.")
+        except Exception as e:
+            self.err("save key", e)
+            self.flash("Could not save the key.")
+
+    def yt_play(self, q):
+        q = q.strip()
+        self.flash("Finding: " + q)
+        threading.Thread(target=self._yt_thread, args=(q,), daemon=True).start()
+        return "Finding " + q + " on YouTube..."
+
+    def _yt_thread(self, q):
+        vid, msg = "", ""
+        try:
+            code, html = http_get("https://www.youtube.com/results?search_query=" + quote(q))
+            m = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
+            if code == 200 and m:
+                vid = m.group(1)
+            else:
+                msg = "youtube search " + str(code)
+        except Exception as e:
+            msg = str(e)
+        Clock.schedule_once(lambda dt: self._yt_open(q, vid, msg), 0)
+
+    def _yt_open(self, q, vid, msg):
+        if msg:
+            self.err("yt find", msg)
+        try:
+            if vid:
+                self.pa("open https://www.youtube.com/watch?v=" + vid)
+                self.reply("Playing the top result for " + q + ".")
+            else:
+                self.pa("open https://www.youtube.com/results?search_query=" + quote(q))
+                self.reply("Could not pick a video, so I opened the search results.")
+        except Exception as e:
+            self.err("yt open", e)
 
     # ---------- chat helpers ----------
 
@@ -1799,6 +1886,13 @@ class BusinessDashboard(App):
                    "show my finances", "how much did i spend"):
             return "Your finance total is $%.2f" % self.db.finance_total()
 
+        m = re.match(r"^(?:open|launch)\s+youtube[,\s]+(?:and\s+)?(?:search|find)(?:\s+for)?\s+(.+?)[,\s]+(?:and\s+)?(?:then\s+)?(?:play|watch|click)\b.*$", low)
+        if m:
+            return self.yt_play(m.group(1))
+        m = (re.match(r"^(?:open|launch|go to)\s+youtube\s+and\s+(?:play|watch)\s+(.+)$", low)
+             or re.match(r"^(?:play|watch)\s+(.+?)(?:\s+on youtube)?$", low))
+        if m:
+            return self.yt_play(m.group(1))
         m = re.match(r"^(?:open|launch|go to)\s+(.+?)\s+and\s+(play|search(?: for)?|look up|find|show me|show|google|watch)\s+(.+)$", low)
         if m:
             app, verb, q = m.group(1), m.group(2), m.group(3)
@@ -1893,10 +1987,7 @@ class BusinessDashboard(App):
     def _gemini_thread(self, key, body):
         code, raw, err = 0, "", ""
         try:
-            code, raw = http_post(
-                GEMINI_URL,
-                {"Content-Type": "application/json", "x-goog-api-key": key},
-                body)
+            code, raw = gemini_post(key, body)
         except Exception as e:
             err = str(e)
         Clock.schedule_once(lambda dt: self.on_gemini(code, raw, err), 0)
