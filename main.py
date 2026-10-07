@@ -1,4 +1,4 @@
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 # Pocket Pal v1.2 (chat screen, voice, talk back, memory, local-first router)
 
 import os
@@ -56,7 +56,7 @@ def build_system(facts):
          'Keep the reply short and natural because it is spoken aloud. No markdown. '
          'Put phone actions in "commands" only when the user asked for an action. '
          'Allowed commands: open <app name or website>, search <text>, call <number>, '
-         'text <number> <message>, timer <minutes>, alarm HH:MM. Max 5 commands. '
+         'text <number> <message>, timer <minutes>, alarm HH:MM, play <what to play on YouTube>. Max 5 commands. '
          'If you need more information to finish a task, ask in the reply and leave commands empty.')
     if facts:
         s += " Known facts about the user: " + "; ".join(facts) + "."
@@ -1153,7 +1153,9 @@ class BusinessDashboard(App):
             "\"question\": \"\", \"done\": false}. Put a question in \"question\" if you need the "
             "user's input or hit a problem (then leave commands empty). Set done true when the goal "
             "is finished. Allowed commands: open <app or website>, search <text>, timer <minutes>, "
-            "alarm HH:MM. Max 3 commands. You cannot tap inside other apps."
+            "alarm HH:MM, play <what to play on YouTube>. To play a song or video on YouTube use "
+            "the play command by itself, do not open the app first. Max 3 commands. "
+            "You cannot tap inside other apps."
         )
         facts = self.db.memories()
         if facts:
@@ -1238,6 +1240,10 @@ class BusinessDashboard(App):
 
     def _auto_cmd(self, pid, cm):
         try:
+            if cm.lower().startswith("play "):
+                self.yt_play(cm[5:])
+                self.db.add_plog(pid, "run", cm + " -> finding the video")
+                return
             res = self.phone_action(cm)
             self.db.add_plog(pid, "run", cm + " -> " + res)
         except Exception as e:
@@ -1893,7 +1899,7 @@ class BusinessDashboard(App):
                    "show my finances", "how much did i spend"):
             return "Your finance total is $%.2f" % self.db.finance_total()
 
-        m = re.match(r"^(?:open|launch)\s+youtube[,\s]+(?:and\s+)?(?:search|find)(?:\s+for)?\s+(.+?)[,\s]+(?:and\s+)?(?:then\s+)?(?:play|watch|click)\b.*$", low)
+        m = re.match(r"^(?:open|launch)\s+youtube[,\s]+(?:and\s+)?(?:then\s+)?(?:search|find)(?:\s+for)?(?:\s+on\s+youtube)?\s+(.+?)[,\s]+(?:and\s+)?(?:then\s+)?(?:play|watch|click)\b.*$", low)
         if m:
             return self.yt_play(m.group(1))
         m = (re.match(r"^(?:open|launch|go to)\s+youtube\s+and\s+(?:play|watch)\s+(.+)$", low)
@@ -2035,6 +2041,9 @@ class BusinessDashboard(App):
 
     def run_cmd(self, c):
         try:
+            if c.lower().startswith("play "):
+                self.yt_play(c[5:])
+                return
             res = self.phone_action(c)
             self.db.log("Phone: " + c + " -> " + res)
             self.add_msg("> " + c + ": " + res, False)
