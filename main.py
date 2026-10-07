@@ -21,10 +21,10 @@ SYS = 'You control an Android phone. Reply ONLY JSON: {"commands": [], "reply": 
 
 
 def http_post(url, headers, body):
-    from jnius import autoclass
+    from jnius import autoclass, cast
     URL = autoclass("java.net.URL")
     Scanner = autoclass("java.util.Scanner")
-    conn = URL(url).openConnection()
+    conn = cast("java.net.HttpURLConnection", URL(url).openConnection())
     conn.setRequestMethod("POST")
     conn.setConnectTimeout(30000)
     conn.setReadTimeout(60000)
