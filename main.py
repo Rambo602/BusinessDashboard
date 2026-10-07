@@ -22,6 +22,13 @@ class Database:
             check_same_thread=False
         )
         self.create_tables()
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS jobs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "target TEXT, command TEXT, status TEXT, "
+            "result TEXT, created_at TEXT)"
+        )
+        self.conn.commit()
 
     def create_tables(self):
 
@@ -199,6 +206,19 @@ class Database:
             LIMIT 8
             """
         ).fetchall()
+
+    def add_job(self, target, command):
+        self.conn.execute(
+            "INSERT INTO jobs(target, command, status, result, created_at) "
+            "VALUES (?, ?, 'queued', '', ?)",
+            (target, command, datetime.now().isoformat())
+        )
+        self.conn.commit()
+
+    def job_count(self):
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status='queued'"
+        ).fetchone()[0]
 
     def close(self):
         self.conn.close()
@@ -592,6 +612,22 @@ class BusinessDashboard(App):
 
         scroll.add_widget(content)
 
+        job_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=110,
+            spacing=8
+        )
+        self.job_input = TextInput(
+            hint_text="Command (start with pc: for PC jobs)",
+            multiline=False
+        )
+        job_btn = Button(text="Send", size_hint_x=0.25)
+        job_btn.bind(on_press=self.add_job)
+        job_row.add_widget(self.job_input)
+        job_row.add_widget(job_btn)
+        root.add_widget(job_row)
+
         root.add_widget(scroll)
 
         self.refresh()
@@ -717,6 +753,18 @@ class BusinessDashboard(App):
 
             self.refresh()
 
+    def add_job(self, instance):
+        text = self.job_input.text.strip()
+        if text:
+            target = "phone"
+            if text.lower().startswith("pc:"):
+                target = "pc"
+                text = text[3:].strip()
+            self.db.add_job(target, text)
+            self.db.log(f"Job queued for {target}: {text}")
+            self.job_input.text = ""
+            self.refresh()
+
     def refresh(self):
 
         try:
@@ -733,7 +781,7 @@ class BusinessDashboard(App):
                 f"TASKS: {tasks}     "
                 f"FINANCES: ${total:.2f}\n"
                 f"EMAIL QUEUE: {emails}     "
-                f"YOUTUBE QUEUE: {comments}"
+                f"YOUTUBE QUEUE: {comments}     JOBS: {self.db.job_count()}"
             )
 
             logs = self.db.recent_logs()
