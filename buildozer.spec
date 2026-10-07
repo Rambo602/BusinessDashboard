@@ -19,7 +19,7 @@ orientation = portrait
 
 fullscreen = 0
 
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA,RECORD_AUDIO,WAKE_LOCK,RECEIVE_BOOT_COMPLETED
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA,RECORD_AUDIO,WAKE_LOCK,RECEIVE_BOOT_COMPLETED,QUERY_ALL_PACKAGES,com.android.alarm.permission.SET_ALARM
 
 android.api = 33
 android.ndk = 25b

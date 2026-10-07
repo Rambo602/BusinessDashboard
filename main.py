@@ -753,6 +753,72 @@ class BusinessDashboard(App):
 
             self.refresh()
 
+    def phone_action(self, text):
+        try:
+            from jnius import autoclass
+        except Exception:
+            return "not on Android"
+        try:
+            PA = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            Uri = autoclass("android.net.Uri")
+            AlarmClock = autoclass("android.provider.AlarmClock")
+            act = PA.mActivity
+            verb, _, arg = text.strip().partition(" ")
+            verb = verb.lower()
+            arg = arg.strip()
+            apps = {
+                "youtube": "com.google.android.youtube",
+                "gmail": "com.google.android.gm",
+                "chrome": "com.android.chrome",
+                "maps": "com.google.android.apps.maps",
+                "camera": "com.android.camera",
+                "settings": "com.android.settings",
+                "tiktok": "com.zhiliaoapp.musically",
+            }
+            if verb == "open":
+                key = arg.lower()
+                if key in apps:
+                    i = act.getPackageManager().getLaunchIntentForPackage(apps[key])
+                    if i is None:
+                        return "app not found: " + key
+                    act.startActivity(i)
+                    return "opened " + key
+                url = arg if "://" in arg else "https://" + arg
+                act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                return "opened " + url
+            if verb == "search":
+                url = "https://www.google.com/search?q=" + Uri.encode(arg)
+                act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                return "searched " + arg
+            if verb == "call":
+                act.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + arg)))
+                return "dialing " + arg
+            if verb == "text":
+                num, _, msg = arg.partition(" ")
+                i = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + num))
+                i.putExtra("sms_body", msg)
+                act.startActivity(i)
+                return "text ready for " + num
+            if verb == "timer":
+                secs = int(float(arg) * 60)
+                i = Intent(AlarmClock.ACTION_SET_TIMER)
+                i.putExtra(AlarmClock.EXTRA_LENGTH, secs)
+                i.putExtra(AlarmClock.EXTRA_SKIP_UI, True)
+                act.startActivity(i)
+                return "timer set " + arg + " min"
+            if verb == "alarm":
+                h, m = arg.split(":")
+                i = Intent(AlarmClock.ACTION_SET_ALARM)
+                i.putExtra(AlarmClock.EXTRA_HOUR, int(h))
+                i.putExtra(AlarmClock.EXTRA_MINUTES, int(m))
+                i.putExtra(AlarmClock.EXTRA_SKIP_UI, True)
+                act.startActivity(i)
+                return "alarm set " + arg
+            return "unknown command. Try: open, search, call, text, timer, alarm"
+        except Exception as e:
+            return "error: " + str(e)
+
     def add_job(self, instance):
         text = self.job_input.text.strip()
         if text:
@@ -760,8 +826,12 @@ class BusinessDashboard(App):
             if text.lower().startswith("pc:"):
                 target = "pc"
                 text = text[3:].strip()
-            self.db.add_job(target, text)
-            self.db.log(f"Job queued for {target}: {text}")
+            if target == "phone":
+                result = self.phone_action(text)
+                self.db.log(f"Phone: {text} -> {result}")
+            else:
+                self.db.add_job(target, text)
+                self.db.log(f"Job queued for {target}: {text}")
             self.job_input.text = ""
             self.refresh()
 
