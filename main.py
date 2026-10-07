@@ -1,4 +1,4 @@
-__version__ = "1.3.6"
+__version__ = "1.3.7"
 # Pocket Pal v1.2 (chat screen, voice, talk back, memory, local-first router)
 
 import os
@@ -681,6 +681,7 @@ class BusinessDashboard(App):
         self.tts_ok = False
         self.thinking = None
         self.cur_proj = None
+        self.voice_target = None
         self.auto_on = False
         self.auto_steps = 0
 
@@ -977,7 +978,9 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_name)
         self.proj_goal = mk_input("Goal: what should it build or do?", multiline=True, height=100)
         c.add_widget(self.proj_goal)
+        self._btn(c, "SPEAK PROJECT (name + goal)", self.speak_project, GREEN, 56)
         self._btn(c, "CREATE PROJECT", self.new_project, MAGENTA)
+        self._btn(c, "CREATE AND AUTO RUN", self.create_run, GREEN)
 
         self._head(c, "YOUR PROJECTS (tap to open)", CYAN)
         self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
@@ -993,6 +996,7 @@ class BusinessDashboard(App):
         self._btn(c, "PAUSE", lambda *a: self.auto_stop("Paused."), AMBER)
         self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
         c.add_widget(self.proj_note)
+        self._btn(c, "SPEAK NOTE / ANSWER", self.speak_note, GREEN)
         self._btn(c, "ADD NOTE / ANSWER", self.add_note, CYAN)
         self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
 
@@ -1447,6 +1451,47 @@ class BusinessDashboard(App):
         except Exception as e:
             self.err("yt open", e)
 
+    # ---------- voice for the project tab ----------
+
+    def speak_project(self, *a):
+        self.convo_active = False
+        self.voice_target = self._got_project
+        self.flash("Listening... say the project and what it should do.")
+        self.listen()
+
+    def _got_project(self, said):
+        said = said.strip()
+        name, goal = "", said
+        m = re.match(r"^(?:create |start |make )?(?:a )?(?:new )?project (?:called|named) (.+?)(?:[,.]? (?:goal|to|that|and) (.+))?$", said, re.I)
+        if m:
+            name = m.group(1).strip()
+            goal = (m.group(2) or said).strip()
+        if not name:
+            name = " ".join(said.split()[:4]).capitalize()
+        self.proj_name.text = name
+        self.proj_goal.text = goal
+        self.flash("Heard it. Tap CREATE PROJECT, or CREATE AND AUTO RUN.")
+
+    def create_run(self, *a):
+        if not self.proj_name.text.strip() and self.proj_goal.text.strip():
+            self.proj_name.text = " ".join(self.proj_goal.text.split()[:4]).capitalize()
+        self.new_project()
+        if self.cur_proj is not None:
+            self.auto_start()
+
+    def speak_note(self, *a):
+        if self.cur_proj is None:
+            self.flash("Open a project first.")
+            return
+        self.convo_active = False
+        self.voice_target = self._got_note
+        self.flash("Listening... say your note or answer.")
+        self.listen()
+
+    def _got_note(self, said):
+        self.proj_note.text = said.strip()
+        self.add_note()
+
     # ---------- chat helpers ----------
 
     def add_msg(self, text, mine):
@@ -1566,6 +1611,7 @@ class BusinessDashboard(App):
                 self.tts.stop()
         except Exception:
             pass
+        self.voice_target = None
         self.convo_active = bool(self.cfg.get("convo"))
         self.listen()
 
@@ -1790,6 +1836,11 @@ class BusinessDashboard(App):
         except Exception as e:
             self.convo_active = False
             Clock.schedule_once(lambda dt: self.err("speech result", e), 0)
+            return
+        cb = self.voice_target
+        self.voice_target = None
+        if cb is not None:
+            Clock.schedule_once(lambda dt: cb(said), 0)
             return
         Clock.schedule_once(lambda dt: self.handle(said, True), 0)
 
