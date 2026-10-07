@@ -1,4 +1,4 @@
-__version__ = "1.3.3"
+__version__ = "1.3.4"
 # Pocket Pal v1.2 (chat screen, voice, talk back, memory, local-first router)
 
 import os
@@ -114,6 +114,13 @@ def gemini_post(key, body):
     return code, raw
 
 
+def gem_msg(raw):
+    try:
+        return str(json.loads(raw)["error"]["message"])[:150]
+    except Exception:
+        return (raw or "no details")[:100]
+
+
 def autosize(lbl):
     lbl.size_hint_y = None
     lbl.halign = "left"
@@ -124,7 +131,7 @@ def autosize(lbl):
 
 
 def mk_input(hint, multiline=False, height=45, **kw):
-    return TextInput(input_type="text", keyboard_suggestions=True,
+    return TextInput(input_type="text", keyboard_suggestions=(not multiline),
                      hint_text=hint, multiline=multiline,
                      size_hint_y=None, height=height, **style_in(kw))
 
@@ -1187,7 +1194,7 @@ class BusinessDashboard(App):
             return
         if code != 200:
             self.err("auto " + str(code), raw[:150])
-            self.auto_stop("Gemini error " + str(code) + ". Paused.")
+            self.auto_stop("Gemini error " + str(code) + ": " + gem_msg(raw) + " Paused.")
             return
         note, cmds, question, done = "", [], "", False
         try:
@@ -2004,7 +2011,7 @@ class BusinessDashboard(App):
             return
         if code != 200:
             self.err("gemini " + str(code), raw[:150])
-            self.reply("Gemini error " + str(code) + ". Try again in a moment.")
+            self.reply("Gemini error " + str(code) + ": " + gem_msg(raw))
             return
         try:
             txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
