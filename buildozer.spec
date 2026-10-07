@@ -12,7 +12,7 @@ source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
 version = 0.1.0
 
-requirements = python3,kivy
+requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0
 
 orientation = portrait
 
@@ -20,7 +20,8 @@ fullscreen = 0
 
 android.permissions = INTERNET,ACCESS_NETWORK_STATE
 
-android.api = 35
+android.api = 33
+android.ndk = 25b
 
 android.minapi = 23
 
