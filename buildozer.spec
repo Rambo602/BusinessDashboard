@@ -11,9 +11,9 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.1
+version = 1.1.1
 
-requirements = python3,kivy
+requirements = python3==3.11.5,hostpython3==3.11.5,kivy
 
 orientation = portrait
 
@@ -24,7 +24,7 @@ android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA,RECORD_AUDIO,WAKE_LOC
 android.api = 33
 android.ndk = 25b
 
-android.minapi = 23
+android.minapi = 24
 
 android.archs = arm64-v8a
 
@@ -35,3 +35,5 @@ android.allow_backup = True
 log_level = 2
 
 warn_on_root = 1
+
+android.ndk_api = 24
