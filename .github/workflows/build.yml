@@ -28,6 +28,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev libltdl-dev
       - name: Build
         run: pip install buildozer cython==0.29.37 && buildozer -v android debug
+      - name: Re-sign APK with permanent key
+        run: |
+          set -e
+          KS=$HOME/.android/debug.keystore
+          keytool -list -keystore $KS -storepass android | grep -q 'F8:34:B8:F4' || { echo WRONG-KEYSTORE-IN-SECRET; keytool -list -keystore $KS -storepass android | grep SHA256; exit 1; }
+          AS=$(find $HOME/.buildozer -type f -name apksigner -path '*build-tools*' | sort | tail -1)
+          echo using $AS
+          for f in bin/*.apk; do $AS sign --ks $KS --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey $f; $AS verify --print-certs $f | grep SHA-256; done
       - uses: actions/upload-artifact@v4
         with:
           name: apk
