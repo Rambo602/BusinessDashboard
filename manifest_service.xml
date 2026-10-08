@@ -11,3 +11,14 @@
 <service android:name="org.rambo.acc.RamboKeepAlive"
     android:exported="false"
     android:foregroundServiceType="dataSync" />
+<activity android:name="org.rambo.acc.AssistOverlayActivity"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar"
+    android:exported="true"
+    android:excludeFromRecents="true"
+    android:taskAffinity=""
+    android:launchMode="singleTask">
+    <intent-filter>
+        <action android:name="android.intent.action.ASSIST" />
+        <category android:name="android.intent.category.DEFAULT" />
+    </intent-filter>
+</activity>

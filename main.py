@@ -3164,8 +3164,49 @@ class BusinessDashboard(App):
                              "Type errors to see it.", False)
         except Exception:
             pass
-        if self.cfg.get("auto"):
+        said_now = self._rambo_assist_hook()
+        if self.cfg.get("auto") and not said_now:
             Clock.schedule_once(lambda dt: self.on_mic(None), 2.5)
+
+    # ---------- hold-button overlay hands us what you said ----------
+
+    def _rambo_say_check(self, intent):
+        try:
+            if intent is None:
+                return False
+            txt = intent.getStringExtra("rambo_say")
+            if not txt:
+                return False
+            txt = str(txt).strip()
+            try:
+                ts = int(intent.getLongExtra("rambo_ts", 0))
+            except Exception:
+                ts = 0
+            try:
+                intent.removeExtra("rambo_say")
+            except Exception:
+                pass
+            if ts and abs(time.time() * 1000 - ts) > 60000:
+                return False
+            if txt == getattr(self, "_rs_last", None) and time.time() - getattr(self, "_rs_t", 0) < 5:
+                return False
+            self._rs_last, self._rs_t = txt, time.time()
+            Clock.schedule_once(lambda dt: self.handle(txt, True), 0.6)
+            return True
+        except Exception as e:
+            self.err("assist say", e)
+            return False
+
+    def _rambo_assist_hook(self):
+        try:
+            from jnius import autoclass
+            from android import activity
+            PA = autoclass("org.kivy.android.PythonActivity")
+            activity.bind(on_new_intent=self._rambo_say_check)
+            return self._rambo_say_check(PA.mActivity.getIntent())
+        except Exception as e:
+            self.err("assist hook", e)
+            return False
 
     def on_pause(self):
         return True
