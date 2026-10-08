@@ -2179,7 +2179,14 @@ class BusinessDashboard(App):
                 msgs.append({"role": "assistant" if role == "model" else "user", "content": t})
             if not msgs or msgs[-1]["role"] != "user":
                 msgs.append({"role": "user", "content": text})
-            msgs[-1] = {"role": "user", "content": "/no_think " + msgs[-1]["content"]}
+            merged = []
+            for m in msgs:
+                if merged and merged[-1]["role"] == m["role"]:
+                    merged[-1] = {"role": m["role"],
+                                  "content": merged[-1]["content"] + chr(10) + m["content"]}
+                else:
+                    merged.append(m)
+            msgs = merged
             self.flash("Thinking on the phone...")
             try:
                 facts = self.db.memories()
@@ -2205,7 +2212,8 @@ class BusinessDashboard(App):
                 sp += ("Saved reference notes you wrote earlier. Use them when relevant and do not contradict them: "
                        + " || ".join(notes) + " ")
             sysm = {"role": "system", "content": sp}
-            body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 250}).encode()
+            body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 250,
+                                    "chat_template_kwargs": {"enable_thinking": False}}).encode()
             rq = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
                                         data=body, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(rq, timeout=150) as r:
