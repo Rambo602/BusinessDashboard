@@ -1258,8 +1258,6 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_title)
         self.proj_status = autosize(Label(text="", color=GREEN))
         c.add_widget(self.proj_status)
-        self._btn(c, "AUTO RUN", self.auto_start, GREEN, 56)
-        self._btn(c, "PAUSE", lambda *a: self.auto_stop("Paused."), AMBER)
 
         self._head(c, "PROJECT LOG", AMBER)
         self.proj_log = autosize(Label(text="", color=TXT))
@@ -1268,6 +1266,8 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_note)
         self._btn(c, "SEND ANSWER", self.add_note, CYAN, 56)
         self._btn(c, "SPEAK ANSWER (MIC)", self.speak_note, GREEN)
+        self._btn(c, "START AUTO RUN", self.auto_start, GREEN, 56)
+        self._btn(c, "PAUSE", lambda *a: self.auto_stop("Paused."), AMBER)
         self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
         self.refresh_projects()
         Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
@@ -1310,7 +1310,7 @@ class BusinessDashboard(App):
             if not p:
                 return
             self.proj_title.text = p[1] + "\nGoal: " + (p[2] or "(none)")
-            self.proj_status.text = "Status: " + p[3] + ("  (auto run ON)" if self.auto_on else "")
+            self.proj_status.text = "Status: " + p[3] + ("  (auto run ON)" if self.auto_on else "") + (("\n" + self.auto_note) if getattr(self, "auto_note", "") and self.auto_on else "")
             lines = []
             for ts, kind, text in self.db.plog(self.cur_proj, 20):
                 who = {"pal": "Pal", "you": "You", "run": "Ran", "ask": "ASKS"}.get(kind, kind)
@@ -1382,6 +1382,8 @@ class BusinessDashboard(App):
             return
         self.auto_on = True
         self.auto_steps = 0
+        self.auto_fail = 0
+        self.auto_note = ""
         self.db.set_pstatus(self.cur_proj, "running")
         self.refresh_projects()
         self.update_proj_view()
@@ -1459,9 +1461,16 @@ class BusinessDashboard(App):
     def on_auto(self, code, raw, err, pid):
         if not self.auto_on or pid != self.cur_proj:
             return
-        if err:
-            self.err("auto net", err)
-            self.auto_stop("No connection. Paused.")
+        if err or code in (408, 500, 502, 503, 504):
+            self.err("auto net", err or str(code))
+            self.auto_fail = getattr(self, "auto_fail", 0) + 1
+            wait = min(10 * (2 ** (self.auto_fail - 1)), 60)
+            self.auto_note = ("No connection, retrying in %d s (try %d)." % (wait, self.auto_fail)
+                              if err else "Gemini busy, retrying in %d s (try %d)." % (wait, self.auto_fail))
+            if self.auto_fail == 8:
+                self.notify("RAMBO AI: still offline", "Auto run keeps retrying. Open the app if you want to stop it.")
+            self.update_proj_view()
+            Clock.schedule_once(self.auto_next, wait)
             return
         if code == 429:
             self.cool_until = time.time() + 60
@@ -1473,6 +1482,8 @@ class BusinessDashboard(App):
             self.err("auto " + str(code), raw[:150])
             self.auto_stop("Gemini error " + str(code) + ": " + gem_msg(raw) + " Paused.")
             return
+        self.auto_fail = 0
+        self.auto_note = ""
         note, cmds, question, done = "", [], "", False
         try:
             txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -1501,7 +1512,7 @@ class BusinessDashboard(App):
             self.db.add_plog(pid, "ask", question)
             self.db.set_pstatus(pid, "waiting")
             self.auto_on = False
-            self.notify("Pocket Pal needs you: " + pname, question)
+            self.notify("RAMBO AI needs you: " + pname, question)
             self.speak(question)
         elif done:
             self.db.set_pstatus(pid, "done")
