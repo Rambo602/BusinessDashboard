@@ -1080,8 +1080,8 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_log)
         self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
         c.add_widget(self.proj_note)
-        self._btn(c, "SPEAK NOTE / ANSWER", self.speak_note, GREEN)
-        self._btn(c, "ADD NOTE / ANSWER", self.add_note, CYAN)
+        self._btn(c, "SEND ANSWER", self.add_note, CYAN, 56)
+        self._btn(c, "SPEAK ANSWER (MIC)", self.speak_note, GREEN)
         self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
         self.refresh_projects()
         Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
@@ -1147,7 +1147,7 @@ class BusinessDashboard(App):
         self.db.add_plog(self.cur_proj, "you", t)
         p = self.db.get_project(self.cur_proj)
         self.update_proj_view()
-        if p and p[3] == "waiting":
+        if p and p[3] != "done":
             self.auto_start()
 
     def mark_done(self, *a):
