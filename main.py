@@ -29,6 +29,12 @@ GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "gemini-flash-latest:generateContent")
 CRASH_PATH = [None]
 
+ACC_HELP = ("Accessibility commands: acc settings | acc status | acc screen | "
+            "acc tap <text> | acc tapxy <x> <y> | acc type <text> | acc clip <text> | "
+            "acc paste | acc scroll down | acc scroll up | acc back | acc home. "
+            "Add 'in 5' in front to wait 5 seconds so you can switch apps first, "
+            "for example: in 5 acc screen")
+
 HELP = ("Say or type: open youtube | search cats | timer 10 minutes | "
         "alarm 7:30 | add task buy milk | what time is it | "
         "remember my gym is at 6am | forget gym. "
@@ -2218,7 +2224,100 @@ class BusinessDashboard(App):
         self.db.log("Phone: " + cmd + " -> " + res)
         return res[:1].upper() + res[1:]
 
+    # ---------- accessibility (see the screen, tap, type) ----------
+
+    def acc_route(self, text, low):
+        m = re.match(r"^in\s+(\d{1,3})\s+(acc(?:\s.*)?)$", text, re.I)
+        if m:
+            secs = int(m.group(1))
+            inner = m.group(2)
+
+            def later():
+                time.sleep(secs)
+                try:
+                    short, full = self.acc_run(inner)
+                except Exception as e:
+                    short, full = "acc error: " + str(e)[:120], None
+                shown = full or short
+
+                def post(dt):
+                    self.add_msg(shown, False)
+                    try:
+                        self.notify("RAMBO AI", short[:100])
+                    except Exception:
+                        pass
+                Clock.schedule_once(post, 0)
+
+            threading.Thread(target=later, daemon=True).start()
+            return "Okay. Running " + inner + " in %d seconds. Switch to the other app now." % secs
+        if low == "acc" or low.startswith("acc "):
+            short, full = self.acc_run(text)
+            if full:
+                self.add_msg(full, False)
+            return short
+        return None
+
+    def acc_run(self, text):
+        body = text.strip()[3:].strip()
+        low = body.lower()
+        try:
+            from jnius import autoclass
+            S = autoclass("org.rambo.acc.RamboAccService")
+        except Exception as e:
+            return ("Accessibility code is not in this build.", None)
+        if low in ("", "help"):
+            return (ACC_HELP, None)
+        if low == "settings":
+            PA = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            Settings = autoclass("android.provider.Settings")
+            PA.mActivity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            return ("Opened Accessibility settings. Find RAMBO AI and turn it on.", None)
+        on = bool(S.isOn())
+        if low == "status":
+            return ("Accessibility is ON." if on else
+                    "Accessibility is OFF. Say: acc settings, then turn on RAMBO AI.", None)
+        if not on:
+            return ("Accessibility is OFF. Say: acc settings, then turn on RAMBO AI.", None)
+        if low == "screen":
+            s = str(S.screenText() or "").strip()
+            pkg = str(S.currentPackage() or "?")
+            if not s:
+                return ("Screen read came back empty (app: " + pkg + ").", None)
+            n = len(s.splitlines())
+            return ("Read %d lines from %s." % (n, pkg), "SCREEN (" + pkg + ")\n" + s[:3500])
+        if low.startswith("tapxy "):
+            p = body[6:].split()
+            if len(p) != 2 or not all(x.isdigit() for x in p):
+                return ("Use: acc tapxy 500 900", None)
+            ok = bool(S.tap(int(p[0]), int(p[1])))
+            return ("Tapped." if ok else "Tap failed.", None)
+        if low.startswith("tap "):
+            t = body[4:].strip()
+            ok = bool(S.clickText(t))
+            return (("Tapped " + t + ".") if ok else ("Could not find " + t + " on screen."), None)
+        if low.startswith("type "):
+            ok = bool(S.typeText(body[5:]))
+            return ("Typed." if ok else "No text box found on screen.", None)
+        if low.startswith("clip "):
+            ok = bool(S.setClip(body[5:]))
+            return ("Copied to clipboard." if ok else "Clipboard failed.", None)
+        if low == "paste":
+            ok = bool(S.pasteText())
+            return ("Pasted." if ok else "Paste failed (no text box found).", None)
+        if low in ("scroll down", "scroll up"):
+            ok = bool(S.scroll(low == "scroll down"))
+            return ("Scrolled." if ok else "Nothing to scroll.", None)
+        if low == "back":
+            return ("Back." if bool(S.back()) else "Back failed.", None)
+        if low == "home":
+            return ("Home." if bool(S.home()) else "Home failed.", None)
+        return ("Unknown acc command. Say: acc help", None)
+
     def local_route(self, text, low):
+        r_acc = self.acc_route(text, low)
+        if r_acc is not None:
+            return r_acc
         if low.startswith("pc:"):
             self.db.add_job("pc", text[3:].strip())
             return "Queued for the PC. Nothing delivers PC jobs yet."

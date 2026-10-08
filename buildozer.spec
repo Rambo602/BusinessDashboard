@@ -12,7 +12,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.5.4
+version = 1.5.5
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy
 
@@ -30,6 +30,12 @@ android.minapi = 24
 android.archs = arm64-v8a
 
 android.allow_backup = True
+
+android.add_src = java
+
+android.add_resources = res
+
+android.extra_manifest_application_xml = %(source.dir)s/manifest_service.xml
 
 [buildozer]
 
