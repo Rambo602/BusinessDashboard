@@ -1052,6 +1052,7 @@ class BusinessDashboard(App):
 
     def build_projects(self):
         sv, c = self._scroll()
+        self.proj_sv = sv
         self._head(c, "NEW PROJECT", MAGENTA)
         self.proj_name = mk_input("Project name (business, game, workout...)")
         c.add_widget(self.proj_name)
@@ -1073,15 +1074,15 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_status)
         self._btn(c, "AUTO RUN", self.auto_start, GREEN, 56)
         self._btn(c, "PAUSE", lambda *a: self.auto_stop("Paused."), AMBER)
+
+        self._head(c, "PROJECT LOG", AMBER)
+        self.proj_log = autosize(Label(text="", color=TXT))
+        c.add_widget(self.proj_log)
         self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
         c.add_widget(self.proj_note)
         self._btn(c, "SPEAK NOTE / ANSWER", self.speak_note, GREEN)
         self._btn(c, "ADD NOTE / ANSWER", self.add_note, CYAN)
         self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
-
-        self._head(c, "PROJECT LOG", AMBER)
-        self.proj_log = autosize(Label(text="", color=TXT))
-        c.add_widget(self.proj_log)
         self.refresh_projects()
         Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
         return sv
@@ -1128,7 +1129,11 @@ class BusinessDashboard(App):
             for ts, kind, text in self.db.plog(self.cur_proj, 20):
                 who = {"pal": "Pal", "you": "You", "run": "Ran", "ask": "ASKS"}.get(kind, kind)
                 lines.append(ts[5:16].replace("T", " ") + " " + who + ": " + text)
-            self.proj_log.text = "\n\n".join(lines) if lines else "No log yet."
+            newlog = "\n\n".join(lines) if lines else "No log yet."
+            changed = newlog != self.proj_log.text
+            self.proj_log.text = newlog
+            if changed:
+                Clock.schedule_once(lambda dt: setattr(self.proj_sv, "scroll_y", 0), 0.4)
         except Exception as e:
             self.err("proj view", e)
 
