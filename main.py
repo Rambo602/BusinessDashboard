@@ -574,6 +574,24 @@ class Database:
             "ORDER BY id DESC LIMIT ?", (pid, n)).fetchall()
         return list(reversed(rows))
 
+    def notes_search(self, query, limit=3):
+        stop = {"what", "with", "that", "this", "have", "from", "your", "about",
+                "tell", "please", "would", "could", "should", "there", "their",
+                "when", "where", "which", "does", "into", "make", "need", "want"}
+        words = [w for w in re.findall(r"[a-z]{4,}", query.lower()) if w not in stop]
+        if not words:
+            return []
+        rows = self.conn.execute(
+            "SELECT text FROM project_log WHERE kind='pal' ORDER BY id DESC LIMIT 300").fetchall()
+        scored = []
+        for (t,) in rows:
+            low = t.lower()
+            sc = sum(1 for w in set(words) if w in low)
+            if sc:
+                scored.append((sc, t))
+        scored.sort(key=lambda x: -x[0])
+        return [t[:700] for sc, t in scored[:limit]]
+
     def task_rows(self, n=30):
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(tasks)")]
         col = None
@@ -1842,15 +1860,45 @@ class BusinessDashboard(App):
                 "camera": "com.android.camera",
                 "settings": "com.android.settings",
                 "tiktok": "com.zhiliaoapp.musically",
+                "claude": "com.anthropic.claude",
+                "chatgpt": "com.openai.chatgpt",
+                "grok": "ai.x.grok",
             }
             if verb == "open":
                 key = arg.lower()
+                rest = ""
+                first = key.split(" ")[0] if key else key
+                if key not in apps and first in apps:
+                    key = first
+                    parts = arg.split(None, 1)
+                    rest = parts[1] if len(parts) > 1 else ""
                 if key in apps:
                     i = act.getPackageManager().getLaunchIntentForPackage(apps[key])
-                    if i is None:
-                        return "app not found: " + key
-                    act.startActivity(i)
-                    return "opened " + key
+                    if i is not None and rest:
+                        try:
+                            try:
+                                from kivy.core.clipboard import Clipboard
+                                Clipboard.copy(rest)
+                            except Exception:
+                                pass
+                            si = Intent(Intent.ACTION_SEND)
+                            si.setType("text/plain")
+                            si.putExtra(Intent.EXTRA_TEXT, rest)
+                            si.setPackage(apps[key])
+                            act.startActivity(si)
+                            return "sent your question to " + key + " (also copied)"
+                        except Exception:
+                            pass
+                    if i is not None:
+                        act.startActivity(i)
+                        if rest:
+                            try:
+                                from kivy.core.clipboard import Clipboard
+                                Clipboard.copy(rest)
+                                return "opened " + key + ". Your question is copied, paste it."
+                            except Exception:
+                                pass
+                        return "opened " + key
                 if "." not in key and "://" not in key:
                     pm = act.getPackageManager()
                     for ai in pm.getInstalledApplications(0).toArray():
@@ -2115,6 +2163,68 @@ class BusinessDashboard(App):
         return None
 
     def ask_gemini(self, text):
+        try:
+            low = text.lower().strip()
+            words = ("code", "script", "write ", "essay", "research", "analy",
+                     "compare", "in detail", "plan ", "translate", "summar",
+                     "debug", "calculate", "step by step")
+            hard = len(text) > 220 or low.startswith("gemini") or any(w in low for w in words)
+            if hard or not self.cfg.get("local", True):
+                self._ask_cloud(text)
+                return
+            msgs = []
+            for role, t in self.hist[-8:]:
+                if not msgs and role != "user":
+                    continue
+                msgs.append({"role": "assistant" if role == "model" else "user", "content": t})
+            if not msgs or msgs[-1]["role"] != "user":
+                msgs.append({"role": "user", "content": text})
+            msgs[-1] = {"role": "user", "content": "/no_think " + msgs[-1]["content"]}
+            self.flash("Thinking on the phone...")
+            try:
+                facts = self.db.memories()
+                notes = self.db.notes_search(text)
+            except Exception:
+                facts, notes = [], []
+            threading.Thread(target=self._local_thread,
+                             args=(text, msgs, facts, notes), daemon=True).start()
+        except Exception as e:
+            self.err("local route", e)
+            self._ask_cloud(text)
+
+    def _local_thread(self, text, msgs, facts=(), notes=()):
+        out, err = "", ""
+        try:
+            import urllib.request
+            sp = ("You are RAMBO AI, a smart, friendly assistant on the user's Android phone. "
+                  "Answer clearly and accurately in two to five practical sentences. "
+                  "If you are not sure, say so instead of guessing. For safety topics put the warning first. ")
+            if facts:
+                sp += "Known facts about the user: " + "; ".join(facts) + ". "
+            if notes:
+                sp += ("Saved reference notes you wrote earlier. Use them when relevant and do not contradict them: "
+                       + " || ".join(notes) + " ")
+            sysm = {"role": "system", "content": sp}
+            body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 250}).encode()
+            rq = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+                                        data=body, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(rq, timeout=150) as r:
+                d = json.loads(r.read().decode())
+            out = d["choices"][0]["message"]["content"].strip()
+            out = re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
+        except Exception as e:
+            err = str(e)
+        Clock.schedule_once(lambda dt: self._local_done(text, out, err), 0)
+
+    def _local_done(self, text, out, err):
+        if out:
+            self.reply(out)
+            return
+        if err and "refused" not in err.lower():
+            self.err("local", err[:150])
+        self._ask_cloud(text)
+
+    def _ask_cloud(self, text):
         try:
             with open(self.key_path) as f:
                 key = f.read().strip()
