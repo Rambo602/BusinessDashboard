@@ -3197,6 +3197,25 @@ class BusinessDashboard(App):
             self.err("assist say", e)
             return False
 
+    def _rambo_overlay(self):
+        # show the listening card over whatever app you were in; plain mic if anything fails
+        try:
+            from jnius import autoclass
+            PA = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            act = PA.mActivity
+            i = Intent()
+            i.setClassName(act.getPackageName(), "org.rambo.acc.AssistOverlayActivity")
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | 0x00010000)
+            act.startActivity(i)
+            Clock.schedule_once(lambda dt: act.moveTaskToBack(True), 0.35)
+        except Exception as e:
+            self.err("overlay", e)
+            try:
+                self.on_mic(None)
+            except Exception:
+                pass
+
     def _rambo_intent(self, intent):
         # hold button = ASSIST intent: open the mic right away
         try:
@@ -3212,7 +3231,7 @@ class BusinessDashboard(App):
             if time.time() - getattr(self, "_as_t", 0) < 4:
                 return False
             self._as_t = time.time()
-            Clock.schedule_once(lambda dt: self.on_mic(None), 0.5)
+            Clock.schedule_once(lambda dt: self._rambo_overlay(), 0.2)
             return True
         except Exception as e:
             self.err("assist intent", e)
