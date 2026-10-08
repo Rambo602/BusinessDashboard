@@ -12,7 +12,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.5.5
+version = 1.5.6
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy
 
@@ -30,6 +30,7 @@ android.minapi = 24
 android.archs = arm64-v8a
 
 android.allow_backup = True
+android.manifest.intent_filters = intent_filters.xml
 
 android.add_src = java
 
