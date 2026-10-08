@@ -1660,7 +1660,12 @@ class BusinessDashboard(App):
             from jnius import autoclass
             TTS = autoclass("android.speech.tts.TextToSpeech")
             t = re.sub(r"[*_`#]", "", text)[:700]
-            self.tts.speak(t, TTS.QUEUE_FLUSH, None, "pp")
+            JS = autoclass("java.lang.String")
+            BN = autoclass("android.os.Bundle")
+            try:
+                self.tts.speak(JS(t), TTS.QUEUE_FLUSH, BN(), "pp")
+            except Exception:
+                self.tts.speak(JS(t), TTS.QUEUE_FLUSH, None)
         except Exception as e:
             self.err("speak", e)
 
