@@ -1035,6 +1035,12 @@ class BusinessDashboard(App):
             text="Key: SAVED" if os.path.exists(self.key_path) else "Key: NOT saved yet",
             color=TXT))
         c.add_widget(self.key_state)
+        self._head(c, "APP UPDATE", AMBER)
+        self.gh_in = mk_input("GitHub token (paste once)", password=True)
+        self._row(c, self.gh_in, "SAVE", self.save_gh_token, AMBER)
+        self._btn(c, "CHECK + INSTALL UPDATE", self.check_update, AMBER, 56)
+        self.upd_out = autosize(Label(text="Installed: " + self._cur_ver(), color=TXT))
+        c.add_widget(self.upd_out)
         self._head(c, "SELF TEST", GREEN)
         self._btn(c, "TEST EVERYTHING", self.run_tests_btn, GREEN, 56)
         self._btn(c, "TEST GEMINI", self.test_gemini, MAGENTA)
@@ -1065,6 +1071,141 @@ class BusinessDashboard(App):
         self.log_output = autosize(Label(text="Ready.", color=TXT))
         c.add_widget(self.log_output)
         return sv
+
+    # ---------- in-app updater ----------
+
+    def _gh_file(self):
+        return os.path.join(os.path.dirname(self.key_path) or ".", "gh_token.txt")
+
+    def _cur_ver(self):
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            return str(act.getPackageManager().getPackageInfo(
+                act.getPackageName(), 0).versionName)
+        except Exception:
+            return "unknown"
+
+    def upd_set(self, text):
+        Clock.schedule_once(lambda dt: setattr(self.upd_out, "text", text), 0)
+
+    def save_gh_token(self, *a):
+        try:
+            t = self.gh_in.text.strip()
+            if not t:
+                self.upd_set("Paste a GitHub token first.")
+                return
+            with open(self._gh_file(), "w", encoding="utf-8") as f:
+                f.write(t)
+            self.gh_in.text = ""
+            self.upd_set("GitHub token SAVED. Tap CHECK + INSTALL UPDATE.")
+        except Exception as e:
+            self.err("save token", e)
+
+    def check_update(self, *a):
+        import threading
+        if not os.path.exists(self._gh_file()):
+            self.upd_set("Save a GitHub token first.")
+            return
+        self.upd_set("Checking GitHub...")
+        threading.Thread(target=self._update_worker, daemon=True).start()
+
+    def _update_worker(self):
+        try:
+            import io
+            import re
+            import zipfile
+            import urllib.error
+            import urllib.request
+            tok = open(self._gh_file(), encoding="utf-8").read().strip()
+            repo = "Rambo602/BusinessDashboard"
+            hdr = {"Authorization": "Bearer " + tok,
+                   "Accept": "application/vnd.github+json",
+                   "User-Agent": "rambo-ai"}
+
+            def get(url, h, timeout):
+                return urllib.request.urlopen(
+                    urllib.request.Request(url, headers=h), timeout=timeout)
+
+            with get("https://api.github.com/repos/%s/actions/artifacts"
+                     "?per_page=30" % repo, hdr, 30) as r:
+                arts = json.loads(r.read().decode())["artifacts"]
+            arts = [x for x in arts if not x.get("expired")
+                    and "apk" in x["name"].lower()]
+            if not arts:
+                self.upd_set("No APK build found on GitHub.")
+                return
+            art = arts[0]
+            self.upd_set("Downloading newest build...")
+
+            class NoRedir(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *a, **k):
+                    return None
+
+            op = urllib.request.build_opener(NoRedir)
+            loc = None
+            data = None
+            try:
+                data = op.open(urllib.request.Request(
+                    art["archive_download_url"], headers=hdr), timeout=30).read()
+            except urllib.error.HTTPError as e:
+                if e.code in (301, 302, 303, 307, 308):
+                    loc = e.headers["Location"]
+                else:
+                    raise
+            if loc:
+                with get(loc, {"User-Agent": "rambo-ai"}, 300) as r:
+                    data = r.read()
+            z = zipfile.ZipFile(io.BytesIO(data))
+            names = [n for n in z.namelist() if n.endswith(".apk")]
+            if not names:
+                self.upd_set("Build zip has no APK inside.")
+                return
+            name = names[0]
+            m = re.search(r"-(\d+(?:\.\d+)+)-", os.path.basename(name))
+            if not m:
+                self.upd_set("Cannot read version from " + name)
+                return
+            new = tuple(int(x) for x in m.group(1).split("."))
+            cur_s = self._cur_ver()
+            try:
+                cur = tuple(int(x) for x in cur_s.split("."))
+            except Exception:
+                cur = (0,)
+            if new <= cur:
+                self.upd_set("Up to date. Installed %s, latest %s." % (cur_s, m.group(1)))
+                return
+            self.upd_set("Opening installer for %s..." % m.group(1))
+            self._install_apk(z.read(name), os.path.basename(name))
+        except Exception as e:
+            self.upd_set("Update failed: %s" % e)
+
+    def _install_apk(self, apk, fname):
+        from jnius import autoclass
+        PA = autoclass("org.kivy.android.PythonActivity")
+        Intent = autoclass("android.content.Intent")
+        ContentValues = autoclass("android.content.ContentValues")
+        Downloads = autoclass("android.provider.MediaStore$Downloads")
+        act = PA.mActivity
+        mime = "application/vnd.android.package-archive"
+        cr = act.getContentResolver()
+        cv = ContentValues()
+        cv.put("_display_name", fname)
+        cv.put("mime_type", mime)
+        cv.put("relative_path", "Download")
+        uri = cr.insert(Downloads.EXTERNAL_CONTENT_URI, cv)
+        out = cr.openOutputStream(uri)
+        step = 1 << 20
+        for i in range(0, len(apk), step):
+            chunk = apk[i:i + step]
+            out.write(chunk, 0, len(chunk))
+        out.close()
+        it = Intent(Intent.ACTION_VIEW)
+        it.setDataAndType(uri, mime)
+        it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_ACTIVITY_NEW_TASK)
+        act.startActivity(it)
+        self.upd_set("Installer opened. Tap Update.")
 
     # ---------- projects and auto run ----------
 
