@@ -3197,13 +3197,34 @@ class BusinessDashboard(App):
             self.err("assist say", e)
             return False
 
+    def _rambo_intent(self, intent):
+        # hold button = ASSIST intent: open the mic right away
+        try:
+            if intent is None:
+                return False
+            if self._rambo_say_check(intent):
+                return True
+            act = intent.getAction()
+            if act is None or str(act) != "android.intent.action.ASSIST":
+                return False
+            if int(intent.getFlags()) & 0x00100000:
+                return False  # restored from recents, not a fresh hold
+            if time.time() - getattr(self, "_as_t", 0) < 4:
+                return False
+            self._as_t = time.time()
+            Clock.schedule_once(lambda dt: self.on_mic(None), 0.5)
+            return True
+        except Exception as e:
+            self.err("assist intent", e)
+            return False
+
     def _rambo_assist_hook(self):
         try:
             from jnius import autoclass
             from android import activity
             PA = autoclass("org.kivy.android.PythonActivity")
-            activity.bind(on_new_intent=self._rambo_say_check)
-            return self._rambo_say_check(PA.mActivity.getIntent())
+            activity.bind(on_new_intent=self._rambo_intent)
+            return self._rambo_intent(PA.mActivity.getIntent())
         except Exception as e:
             self.err("assist hook", e)
             return False
