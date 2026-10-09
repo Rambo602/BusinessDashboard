@@ -1,4 +1,5 @@
 [app]
+p4a.source_dir = ./p4a-src
 android.accept_sdk_license = True
 
 title = RAMBO AI
@@ -12,7 +13,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.6.3
+version = 1.6.5
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy
 
@@ -32,12 +33,11 @@ android.archs = arm64-v8a
 android.allow_backup = True
 android.manifest.intent_filters = intent_filters.xml
 
-android.add_src = java,java_src
+android.add_src = java
 android.add_activities = org.rambo.acc.AssistOverlayActivity
 
 android.add_resources = res
 
-android.extra_manifest_application_xml = %(source.dir)s/manifest_service.xml
 
 [buildozer]
 

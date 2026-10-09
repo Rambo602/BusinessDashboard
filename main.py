@@ -1046,6 +1046,10 @@ class BusinessDashboard(App):
                                    hint_text_color=(0.4, 0.55, 0.65, 1),
                                    padding=[2, 15, 2, 0])
         self.msg_input.bind(on_text_validate=self.on_send)
+        plus = NeonButton(glow=CYAN, text="+", size_hint=(None, 1),
+                          width=46, font_size="26sp")
+        plus.bind(on_press=self.on_attach)
+        pill.add_widget(plus)
         pill.add_widget(self.msg_input)
         mic = NeonButton(glow=GREEN, text="MIC", size_hint=(None, 1),
                          width=62, font_size="14sp")
@@ -2521,12 +2525,131 @@ class BusinessDashboard(App):
             return
         Clock.schedule_once(lambda dt: self.listen(), 0.4)
 
+    # ---------- + button: attach a file ----------
+
+    ATTACH_MAX = 15 * 1024 * 1024
+
+    def on_attach(self, instance):
+        try:
+            from jnius import autoclass
+            from android import activity
+            PA = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            i = Intent(Intent.ACTION_GET_CONTENT)
+            i.setType("*/*")
+            i.addCategory(Intent.CATEGORY_OPENABLE)
+            activity.unbind(on_activity_result=self.on_attach_result)
+            activity.bind(on_activity_result=self.on_attach_result)
+            PA.mActivity.startActivityForResult(Intent.createChooser(i, "Attach a file"), 4343)
+        except Exception as e:
+            self.err("attach", e)
+            self.add_msg("Could not open the file picker: " + str(e)[:150], False)
+
+    def on_attach_result(self, request, result, data):
+        if request != 4343:
+            return
+        if result != -1 or data is None:
+            return
+        try:
+            uri = data.getData()
+        except Exception as e:
+            Clock.schedule_once(lambda dt: self.err("attach result", e), 0)
+            return
+        if uri is None:
+            return
+        threading.Thread(target=self._attach_read, args=(uri,), daemon=True).start()
+
+    def _attach_read(self, uri):
+        name, mime, raw, err = "file", "", b"", ""
+        try:
+            from jnius import autoclass
+            PA = autoclass("org.kivy.android.PythonActivity")
+            res = PA.mActivity.getContentResolver()
+            try:
+                mime = str(res.getType(uri) or "")
+            except Exception:
+                pass
+            try:
+                cur = res.query(uri, None, None, None, None)
+                if cur is not None:
+                    try:
+                        if cur.moveToFirst():
+                            ix = cur.getColumnIndex("_display_name")
+                            if ix >= 0:
+                                name = str(cur.getString(ix))
+                    finally:
+                        cur.close()
+            except Exception:
+                pass
+            pfd = res.openFileDescriptor(uri, "r")
+            fd = pfd.detachFd()
+            with os.fdopen(fd, "rb") as f:
+                raw = f.read(self.ATTACH_MAX + 1)
+        except Exception as e:
+            err = str(e)[:150]
+        Clock.schedule_once(lambda dt: self._attach_done(name, mime, raw, err), 0)
+
+    def _attach_done(self, name, mime, raw, err):
+        import base64
+        import mimetypes
+        if err or not raw:
+            self.add_msg("Could not read that file. " + err, False)
+            return
+        if len(raw) > self.ATTACH_MAX:
+            self.add_msg("That file is over 15 MB. Pick a smaller one.", False)
+            return
+        if mime in ("", "application/octet-stream"):
+            mime = mimetypes.guess_type(name)[0] or mime
+        parts = None
+        if mime.startswith(("image/", "audio/")) or mime == "application/pdf":
+            parts = [{"inline_data": {"mime_type": mime,
+                                      "data": base64.b64encode(raw).decode()}}]
+        else:
+            try:
+                t = raw.decode("utf-8")
+                if "\x00" in t[:2000]:
+                    raise ValueError("binary")
+                parts = [{"text": "File " + name + ":" + chr(10) + t[:120000]}]
+            except Exception:
+                parts = None
+        if parts is None:
+            self.add_msg("I can read text, PDF, image and audio files. That one looks like "
+                         + (mime or "an unknown type") + ".", False)
+            return
+        self.attach = {"name": name, "parts": parts}
+        kb = max(1, len(raw) // 1024)
+        self.add_msg("Attached: " + name + " (" + str(kb) + " KB). Type your question and "
+                     "press SEND, or just press SEND to get a summary. Tap + to pick a different file.", False)
+
+    def _send_attach(self, text):
+        att = self.attach
+        self.attach = None
+        if not text:
+            text = "Summarize this file."
+        shown = text + chr(10) + "(file: " + att["name"] + ")"
+        self.add_msg(shown, True)
+        self.hide_chips()
+        try:
+            self.db.add_chat("user", shown)
+        except Exception as e:
+            self.err("chat save", e)
+        self.hist.append(("user", text))
+        self.hist = self.hist[-12:]
+        self._att_once = att["parts"]
+        try:
+            self._ask_cloud(text)
+        finally:
+            self._att_once = None
+
     # ---------- actions from buttons ----------
 
     def on_send(self, instance):
         text = self.msg_input.text.strip()
         self.msg_input.text = ""
         self.convo_active = False
+        if getattr(self, "attach", None):
+            self._send_attach(text)
+            return
         if text:
             self.handle(text, False)
 
@@ -3172,6 +3295,9 @@ class BusinessDashboard(App):
             contents.append({"role": role, "parts": [{"text": t}]})
         if not contents:
             contents = [{"role": "user", "parts": [{"text": text}]}]
+        ap = getattr(self, "_att_once", None)
+        if ap:
+            contents[-1] = {"role": "user", "parts": list(ap) + [{"text": text}]}
         payload = {
             "systemInstruction": {"parts": [{"text": build_system(self.db.memories())}]},
             "contents": contents,

@@ -26,6 +26,13 @@ jobs:
           key: bz-${{ hashFiles('buildozer.spec') }}
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev libltdl-dev
+      - name: Prepare patched python-for-android
+        run: |
+          set -e
+          BR=$(grep ^p4a.branch buildozer.spec | head -n1 | cut -d= -f2 | tr -d " ")
+          BR=${BR:-master}
+          git clone --depth 1 -b "$BR" https://github.com/kivy/python-for-android p4a-src
+          python3 ci_patch_manifest.py
       - name: Build
         run: pip install buildozer cython==0.29.37 && buildozer -v android debug
       - name: Re-sign APK with permanent key
@@ -36,6 +43,11 @@ jobs:
           AS=$(find $HOME/.buildozer -type f -name apksigner -path '*build-tools*' | sort | tail -1)
           echo using $AS
           for f in bin/*.apk; do $AS sign --ks $KS --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey $f; $AS verify --print-certs $f | grep SHA-256; done
+      - name: Verify service is in APK
+        run: |
+          AAPT=$(find $HOME/.buildozer -type f -name aapt -path '*build-tools*' | sort | tail -1)
+          [ -n "$AAPT" ] || { echo "no aapt found, skipping check"; exit 0; }
+          for f in bin/*.apk; do $AAPT dump xmltree $f AndroidManifest.xml | grep -q RamboAccService || { echo SERVICE-MISSING-IN-APK; exit 1; }; done
       - uses: actions/upload-artifact@v4
         with:
           name: apk
