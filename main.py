@@ -323,6 +323,18 @@ class Bubble(Label):
             self._rect.pos = self.pos
             self._rect.size = self.size
 
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos) and getattr(touch, "is_double_tap", False):
+            try:
+                from kivy.core.clipboard import Clipboard
+                from kivy.app import App
+                Clipboard.copy(self.text)
+                App.get_running_app().flash("Copied this message")
+            except Exception:
+                pass
+            return True
+        return super().on_touch_down(touch)
+
 
 from kivy.graphics import Line
 from kivy.uix.gridlayout import GridLayout
@@ -1004,6 +1016,9 @@ class BusinessDashboard(App):
         newb = NeonButton(glow=MAGENTA, text="NEW CHAT", size_hint_x=0.34,
                           font_size="12sp")
         newb.bind(on_press=lambda *a: self.new_chat())
+        cpb = NeonButton(glow=GREEN, text="COPY", size_hint_x=0.22, font_size="12sp")
+        cpb.bind(on_press=lambda *a: self.copy_chat())
+        top.add_widget(cpb)
         top.add_widget(newb)
         v.add_widget(top)
 
@@ -1068,6 +1083,22 @@ class BusinessDashboard(App):
     def chip_go(self, cmd):
         self.convo_active = False
         self.handle(cmd, False)
+
+    def copy_chat(self):
+        try:
+            from kivy.core.clipboard import Clipboard
+            rows = self.db.recent_chat(40)
+            out = []
+            for role, text in rows:
+                out.append(("You: " if role == "user" else "RAMBO AI: ") + str(text))
+            if not out:
+                self.flash("Nothing to copy yet")
+                return
+            Clipboard.copy("\n\n".join(out))
+            self.flash("Copied the last %d messages. Paste them to Claude." % len(out))
+        except Exception as e:
+            self.err("copy chat", e)
+            self.flash("Copy failed")
 
     def hide_chips(self):
         try:
