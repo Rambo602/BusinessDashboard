@@ -12,7 +12,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.6.1
+version = 1.6.2
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy
 

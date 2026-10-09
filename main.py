@@ -35,6 +35,41 @@ ACC_HELP = ("Accessibility commands: acc settings | acc status | acc screen | "
             "Add 'in 5' in front to wait 5 seconds so you can switch apps first, "
             "for example: in 5 acc screen")
 
+ACC_AUTO = ("You can also use the screen of other apps: acc screen (reads the visible text, "
+            "it appears as a SCREEN line on your next turn), acc tap <exact text on screen>, "
+            "acc type <text>, acc clip <text>, acc paste, acc scroll down, acc scroll up, acc back, acc home. "
+            "To work inside an app: open <app>, then acc screen, then ONE tap or type, then acc screen "
+            "again to check it worked before the next step. Never invent button names, only tap text you "
+            "saw in a SCREEN line. Never tap or type send, pay, buy, order, delete, post or submit: the app "
+            "stops and asks the user. If the screen does not show what you need, set question.")
+
+AUTO_RISKY = re.compile(r"\b(send|pay|payment|buy|purchase|order|checkout|check out|delete|remove|erase|"
+                        r"post|publish|submit|transfer|confirm|subscribe|uninstall|reset|log ?out|sign ?out)\b",
+                        re.I)
+
+LEARN_RX = [
+    re.compile(r"^(?:my name is|call me)\s+[a-z][a-z' -]{1,30}$", re.I),
+    re.compile(r"^i (?:live|work|study) (?:in|at|for|with)\s+.{2,60}$", re.I),
+    re.compile(r"^i (?:really )?(?:like|love|prefer|hate|dislike|enjoy)\s+.{2,60}$", re.I),
+    re.compile(r"^my (?:goal|focus|job|business|dream|plan|favou?rite [a-z ]{2,20}) (?:is|are)\s+.{2,80}$", re.I),
+    re.compile(r"^i(?:'m| am) (?:building|working on|learning|studying|making|starting)\s+.{2,80}$", re.I),
+]
+
+
+def learn_fact(text):
+    t = " ".join((text or "").strip().split()).rstrip(".!")
+    if not t or len(t) > 140 or "?" in t:
+        return None
+    if re.match(r"^(?:remember|forget|note|add|open|search|call|text|play|timer|alarm|acc)\b", t, re.I):
+        return None
+    if re.search(r"\b(?:love|like|hate|dislike|enjoy|prefer) (?:you|it|that|this|them|him|her|u)\b", t, re.I):
+        return None
+    for rx in LEARN_RX:
+        if rx.match(t):
+            return t[0].upper() + t[1:]
+    return None
+
+
 HELP = ("Say or type: open youtube | search cats | timer 10 minutes | "
         "alarm 7:30 | add task buy milk | what time is it | "
         "remember my gym is at 6am | forget gym. "
@@ -713,6 +748,35 @@ class Database:
                 scored.append((sc, t))
         scored.sort(key=lambda x: -x[0])
         return [t[:700] for sc, t in scored[:limit]]
+
+    def recall_project(self, pid, window, query, k=3, cut=400):
+        # older project notes (not in the visible log window) that match the goal
+        shown = set(t for _, _, t in self.plog(pid, window))
+        rows = self.conn.execute(
+            "SELECT text FROM project_log WHERE project_id=? AND kind='pal' "
+            "ORDER BY id DESC LIMIT 400", (pid,)).fetchall()
+        stop = {"what", "with", "that", "this", "have", "from", "your", "about", "project",
+                "goal", "note", "step", "then", "next", "make", "need", "want", "will"}
+        words = set(w for w in re.findall(r"[a-z]{4,}", (query or "").lower()) if w not in stop)
+        scored = []
+        for i, (t,) in enumerate(rows):
+            if t in shown:
+                continue
+            low = t.lower()
+            scored.append((sum(1 for w in words if w in low), -i, t))
+        scored.sort(reverse=True)
+        hit = [x for x in scored if x[0] > 0][:k]
+        if not hit:
+            hit = scored[:2]
+        return [x[2][:cut] for x in hit]
+
+    def forget_last(self):
+        row = self.conn.execute("SELECT id, fact FROM memory ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return ""
+        self.conn.execute("DELETE FROM memory WHERE id=?", (row[0],))
+        self.conn.commit()
+        return row[1]
 
     def task_rows(self, n=30):
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(tasks)")]
@@ -1791,7 +1855,7 @@ class BusinessDashboard(App):
              "(then leave commands empty). Set done true only when the goal is fully finished. "
              "Allowed commands: open <app>, timer <minutes>, alarm HH:MM, "
              "play <what to play on YouTube>. To play a song or video use the play command by "
-             "itself. Max 3 commands. You cannot tap inside other apps.")
+             "itself. Max 3 commands. " + ACC_AUTO)
         try:
             facts = self.db.memories()
         except Exception:
@@ -1804,8 +1868,20 @@ class BusinessDashboard(App):
     def _auto_user(self, pid, n, cut, webcut=900):
         lines = []
         for ts, k, t in self.db.plog(pid, n):
-            lines.append(k.upper() + ": " + t[:(webcut if t.startswith("WEB") else cut)])
-        return "Project log so far:\n" + "\n".join(lines) + "\n\nDo the next step."
+            lines.append(k.upper() + ": " + t[:(webcut if t.startswith(("WEB", "SCREEN")) else cut)])
+        older = []
+        try:
+            p = self.db.get_project(pid)
+            last = lines[-1] if lines else ""
+            older = self.db.recall_project(
+                pid, n, ((p[1] + " " + (p[2] or "")) if p else "") + " " + last)
+        except Exception as e:
+            self.err("recall", e)
+        head = ""
+        if older:
+            head = ("Earlier findings from this project (older than the log below):\n- "
+                    + "\n- ".join(older) + "\n\n")
+        return head + "Project log so far:\n" + "\n".join(lines) + "\n\nDo the next step."
 
     def _auto_parse(self, txt):
         t2 = (txt or "").strip()
@@ -1996,7 +2072,7 @@ class BusinessDashboard(App):
                         return
                     self._auto_web(pid, kind, arg)
                 for n, cm in enumerate(keep):
-                    Clock.schedule_once(lambda dt, cm=cm: self._auto_cmd(pid, cm), 1 + 1.5 * n)
+                    Clock.schedule_once(lambda dt, cm=cm: self._auto_cmd(pid, cm), self._auto_delay(keep, n))
                 pname = p[1]
                 if question:
                     self.db.add_plog(pid, "ask", question)
@@ -2010,7 +2086,7 @@ class BusinessDashboard(App):
                     Clock.schedule_once(
                         lambda dt: self.speak("Project " + pname + " is finished."), 0)
                     return
-                self._auto_sleep(pid, gen, (25 if src == "Gemini" else 6) + 1.5 * len(keep))
+                self._auto_sleep(pid, gen, (25 if src == "Gemini" else 6) + self._auto_delay(keep, len(keep)))
         except Exception as e:
             self.err("auto loop", e)
             try:
@@ -2021,8 +2097,72 @@ class BusinessDashboard(App):
             if not self.auto_on:
                 self.ka(False)
 
+    def _auto_delay(self, keep, n):
+        d = 1.0 + 1.5 * n
+        for c in keep[:n]:
+            if c.strip().lower().startswith("open "):
+                d += 3.5
+        return d
+
+    def _auto_risky(self, cm):
+        low = cm.strip().lower()
+        verb = low.split(" ", 1)[0] if low else ""
+        return verb in ("call", "text", "sms", "email", "pay", "buy", "delete")
+
+    def _auto_block(self, pid, cm, why=""):
+        self._auto_hold = time.time() + 25
+        self.db.add_plog(pid, "run", "STOPPED (needs your OK): " + cm + ((" - " + why) if why else ""))
+        q = ("I want to run: " + cm + ". It could have a real-world effect, so I stopped. "
+             "If you agree, type that exact command in the command box yourself, "
+             "then tap AUTO RUN to continue.")
+        self.db.add_plog(pid, "ask", q)
+        p = self.db.get_project(pid)
+        self._auto_end(pid, "waiting", None)
+        try:
+            self.notify("RAMBO AI needs you: " + (p[1] if p else ""), q[:150])
+            self.speak(q)
+        except Exception as e:
+            self.err("auto block", e)
+
+    def _auto_acc(self, pid, cm):
+        body = cm[3:].strip()
+        bl = body.lower()
+        if bl.startswith("tapxy"):
+            self._auto_block(pid, cm, "tapping a position blind")
+            return
+        if bl.startswith("tap ") and AUTO_RISKY.search(body[4:]):
+            self._auto_block(pid, cm)
+            return
+        short, full = self.acc_run(cm)
+        if full:
+            self.db.add_plog(pid, "run", full[:1800])
+        else:
+            self.db.add_plog(pid, "run", cm + " -> " + short)
+
+    def _auto_learn(self, text, low):
+        if not self.cfg.get("learn", True):
+            return
+        f = learn_fact(text)
+        if not f:
+            return
+        if f.lower() in [m.lower() for m in self.db.memories(300)]:
+            return
+        self.db.add_memory(f)
+        self.db.log("Auto-remembered: " + f)
+        self.flash("Remembered: " + f[:80])
+
     def _auto_cmd(self, pid, cm):
         try:
+            if time.time() < getattr(self, "_auto_hold", 0):
+                self.db.add_plog(pid, "run", cm + " -> skipped (stopped for your OK)")
+                return
+            low0 = cm.strip().lower()
+            if low0 == "acc" or low0.startswith("acc "):
+                self._auto_acc(pid, cm.strip())
+                return
+            if self._auto_risky(cm):
+                self._auto_block(pid, cm)
+                return
             if cm.lower().startswith("play "):
                 self.yt_play(cm[5:])
                 self.db.add_plog(pid, "run", cm + " -> finding the video")
@@ -2806,6 +2946,17 @@ class BusinessDashboard(App):
         return ("Unknown acc command. Say: acc help", None)
 
     def local_route(self, text, low):
+        try:
+            self._auto_learn(text, low)
+        except Exception as e:
+            self.err("learn", e)
+        if low in ("learning off", "stop learning", "learning on", "start learning"):
+            self.cfg["learn"] = low in ("learning on", "start learning")
+            self.save_settings()
+            return "Auto-learning is " + ("ON." if self.cfg["learn"] else "OFF.")
+        if low in ("forget last", "forget the last one", "undo remember"):
+            gone = self.db.forget_last()
+            return ("Forgot: " + gone) if gone else "Nothing to forget."
         r_acc = self.acc_route(text, low)
         if r_acc is not None:
             return r_acc
