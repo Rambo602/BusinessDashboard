@@ -12,7 +12,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.6.0
+version = 1.6.1
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy
 
@@ -33,6 +33,7 @@ android.allow_backup = True
 android.manifest.intent_filters = intent_filters.xml
 
 android.add_src = java
+android.add_activities = org.rambo.acc.AssistOverlayActivity
 
 android.add_resources = res
 

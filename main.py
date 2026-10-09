@@ -3206,7 +3206,7 @@ class BusinessDashboard(App):
             act = PA.mActivity
             i = Intent()
             i.setClassName(act.getPackageName(), "org.rambo.acc.AssistOverlayActivity")
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | 0x00010000)
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | 0x00010000 | 0x08000000 | 0x00800000)
             act.startActivity(i)
             Clock.schedule_once(lambda dt: act.moveTaskToBack(True), 0.35)
         except Exception as e:

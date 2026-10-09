@@ -32,6 +32,7 @@ public class AssistOverlayActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle b) {
+        setTheme(android.R.style.Theme_Translucent_NoTitleBar);
         super.onCreate(b);
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.argb(90, 0, 0, 0));
