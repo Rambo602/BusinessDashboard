@@ -288,10 +288,13 @@ def autosize(lbl):
     return lbl
 
 
+from kivy.metrics import dp as _dp
+
+
 def mk_input(hint, multiline=False, height=45, **kw):
     return TextInput(input_type="text", keyboard_suggestions=(not multiline),
                      hint_text=hint, multiline=multiline,
-                     size_hint_y=None, height=height, **style_in(kw))
+                     size_hint_y=None, height=_dp(height), **style_in(kw))
 
 
 class Bubble(Label):
@@ -907,11 +910,11 @@ class BusinessDashboard(App):
         self.body = BoxLayout()
         root.add_widget(self.body)
         self.flash_lbl = Label(text="Ready.", color=GREEN, font_size="13sp",
-                               size_hint_y=None, height=26, shorten=True,
+                               size_hint_y=None, height=_dp(24), shorten=True,
                                halign="center", valign="middle")
         self.flash_lbl.bind(size=lambda w, v: setattr(w, "text_size", v))
         root.add_widget(self.flash_lbl)
-        bar = BoxLayout(size_hint_y=None, height=54, spacing=6)
+        bar = BoxLayout(size_hint_y=None, height=_dp(56), spacing=6)
         self.tab_btns = {}
         self.tab_views = {}
         builders = [("TALK", self.build_chat), ("PHONE", self.build_phone),
@@ -989,13 +992,13 @@ class BusinessDashboard(App):
                            size_hint_y=None, height=36))
 
     def _btn(self, c, t, cb, col=CYAN, h=48):
-        b = NeonButton(glow=col, text=t, size_hint_y=None, height=h)
+        b = NeonButton(glow=col, text=t, size_hint_y=None, height=_dp(h))
         b.bind(on_press=self._wrap(cb))
         c.add_widget(b)
         return b
 
     def _row(self, c, inp, label, cb, col=CYAN):
-        r = BoxLayout(size_hint_y=None, height=48, spacing=6)
+        r = BoxLayout(size_hint_y=None, height=_dp(50), spacing=6)
         r.add_widget(inp)
         b = NeonButton(glow=col, text=label, size_hint_x=0.32)
         b.bind(on_press=self._wrap(cb))
@@ -1008,7 +1011,7 @@ class BusinessDashboard(App):
         v = BoxLayout(orientation="vertical", spacing=6)
         self.chat_view = v
 
-        top = BoxLayout(size_hint_y=None, height=44, spacing=6)
+        top = BoxLayout(size_hint_y=None, height=_dp(46), spacing=6)
         title = Label(text="RAMBO AI", color=TXT, bold=True, font_size="19sp",
                       halign="left", valign="middle", padding=[10, 0])
         title.bind(size=lambda w, sz: setattr(w, "text_size", sz))
@@ -1029,7 +1032,7 @@ class BusinessDashboard(App):
         self.chat_scroll.add_widget(self.chat_box)
         v.add_widget(self.chat_scroll)
 
-        self.chips_row = BoxLayout(size_hint_y=None, height=40, spacing=6)
+        self.chips_row = BoxLayout(size_hint_y=None, height=_dp(42), spacing=6)
         for label, cmd in (("YouTube", "open youtube"),
                            ("10 min timer", "set a timer for 10 minutes"),
                            ("My tasks", "show my tasks"),
@@ -1040,7 +1043,7 @@ class BusinessDashboard(App):
             self.chips_row.add_widget(cb)
         v.add_widget(self.chips_row)
 
-        pill = BoxLayout(size_hint_y=None, height=58, spacing=4,
+        pill = BoxLayout(size_hint_y=None, height=_dp(60), spacing=4,
                          padding=[14, 4, 4, 4])
         with pill.canvas.before:
             Color(0.09, 0.11, 0.19, 1)
@@ -1065,15 +1068,15 @@ class BusinessDashboard(App):
         self.msg_input.bind(on_text_validate=self.on_send)
         pill.add_widget(self.msg_input)
         plus = NeonButton(glow=CYAN, text="+", size_hint=(None, 1),
-                          width=46, font_size="26sp")
+                          width=_dp(54), font_size="26sp")
         plus.bind(on_press=self.on_attach)
         pill.add_widget(plus)
         mic = NeonButton(glow=GREEN, text="MIC", size_hint=(None, 1),
-                         width=62, font_size="14sp")
+                         width=_dp(68), font_size="14sp")
         mic.bind(on_press=self.on_mic)
         pill.add_widget(mic)
         send = NeonButton(glow=CYAN, text="SEND", size_hint=(None, 1),
-                          width=68, font_size="14sp")
+                          width=_dp(76), font_size="14sp")
         send.bind(on_press=self.on_send)
         pill.add_widget(send)
         v.add_widget(self._att_make_strip())
@@ -1123,7 +1126,7 @@ class BusinessDashboard(App):
     def build_tools(self):
         sv, c = self._scroll()
         self._head(c, "VOICE", MAGENTA)
-        row = BoxLayout(size_hint_y=None, height=46, spacing=6)
+        row = BoxLayout(size_hint_y=None, height=_dp(50), spacing=6)
         self.b_talk = NeonButton(glow=MAGENTA, font_size="13sp")
         self.b_convo = NeonButton(glow=MAGENTA, font_size="13sp")
         self.b_auto = NeonButton(glow=MAGENTA, font_size="13sp")
@@ -1164,7 +1167,7 @@ class BusinessDashboard(App):
         apps = [("YouTube", "youtube"), ("Gmail", "gmail"), ("Chrome", "chrome"),
                 ("Maps", "maps"), ("Camera", "camera"), ("Settings", "settings"),
                 ("TikTok", "tiktok"), ("Messages", "messages")]
-        g = GridLayout(cols=2, spacing=8, size_hint_y=None, height=4 * 56 + 3 * 8)
+        g = GridLayout(cols=2, spacing=8, size_hint_y=None, height=_dp(4 * 56 + 3 * 8))
         for label, app in apps:
             b = NeonButton(glow=GREEN, text=label)
             b.bind(on_press=lambda inst, a=app: self.phone_go("open " + a))
@@ -2255,7 +2258,7 @@ class BusinessDashboard(App):
         if not rows:
             self.task_list.add_widget(autosize(Label(text="No tasks yet.", color=TXT)))
         for tid, text in rows:
-            r = BoxLayout(size_hint_y=None, height=56, spacing=5)
+            r = BoxLayout(size_hint_y=None, height=_dp(56), spacing=5)
             l = Label(text=text, color=TXT, halign="left", valign="middle",
                       shorten=True, shorten_from="right", size_hint_x=0.5)
             l.bind(size=lambda w, v: setattr(w, "text_size", v))
@@ -2727,7 +2730,7 @@ class BusinessDashboard(App):
             pass
         lab = Label(text="", color=TXT, font_size="13sp", halign="left", valign="middle")
         lab.bind(size=lambda w, sz: setattr(w, "text_size", sz))
-        rm = NeonButton(glow=MAGENTA, text="X", size_hint=(None, 1), width=52, font_size="20sp")
+        rm = NeonButton(glow=MAGENTA, text="X", size_hint=(None, 1), width=_dp(56), font_size="20sp")
         rm.bind(on_press=lambda *a: self._att_remove())
         strip.add_widget(thumb)
         strip.add_widget(lab)
