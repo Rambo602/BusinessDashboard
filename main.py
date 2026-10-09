@@ -1017,7 +1017,9 @@ class BusinessDashboard(App):
         self.chips_row = BoxLayout(size_hint_y=None, height=40, spacing=6)
         for label, cmd in (("YouTube", "open youtube"),
                            ("10 min timer", "set a timer for 10 minutes"),
-                           ("My tasks", "show my tasks")):
+                           ("My tasks", "show my tasks"),
+                           ("APK", "apk pick"),
+                           ("PROG", "prog pick"), ("DOC", "doc pick")):
             cb = NeonButton(glow=CYAN, text=label, font_size="12sp")
             cb.bind(on_press=lambda inst, c=cmd: self.chip_go(c))
             self.chips_row.add_widget(cb)
@@ -1046,11 +1048,11 @@ class BusinessDashboard(App):
                                    hint_text_color=(0.4, 0.55, 0.65, 1),
                                    padding=[2, 15, 2, 0])
         self.msg_input.bind(on_text_validate=self.on_send)
+        pill.add_widget(self.msg_input)
         plus = NeonButton(glow=CYAN, text="+", size_hint=(None, 1),
                           width=46, font_size="26sp")
         plus.bind(on_press=self.on_attach)
         pill.add_widget(plus)
-        pill.add_widget(self.msg_input)
         mic = NeonButton(glow=GREEN, text="MIC", size_hint=(None, 1),
                          width=62, font_size="14sp")
         mic.bind(on_press=self.on_mic)
@@ -2525,25 +2527,58 @@ class BusinessDashboard(App):
             return
         Clock.schedule_once(lambda dt: self.listen(), 0.4)
 
-    # ---------- + button: attach a file ----------
+    # ---------- + button: attach a file (APK files go to the APK Analyzer) ----------
 
     ATTACH_MAX = 15 * 1024 * 1024
+    APK_EXT = (".apk", ".apks", ".xapk", ".apkm")
+    APK_HELP = ("APK Analyzer. It only reads APK files. It never installs or runs them.\n"
+                "apk pick (or tap + and choose an APK)\n"
+                "apk summary | manifest | permissions | components [exported]\n"
+                "apk strings TEXT | classes TEXT | class NAME | method CLASS METHOD\n"
+                "apk search TEXT | deps | network | files TEXT | file PATH\n"
+                "apk report | apk report save\n"
+                "apk ask YOUR QUESTION (Gemma answers from the extracted evidence)\n"
+                "apk cloud on / off (lets Gemini help, and shows what would be sent)\n"
+                "apk limit MB | apk cancel | apk delete | apk delete all | apk jadx")
+    APK_SYS = ("You are RAMBO AI's APK analysis assistant. You get EVIDENCE from static analysis of an "
+               "Android APK: manifest data, class and method names, strings, URLs, libraries. Rules: "
+               "use only the evidence. Name the class, string, permission or file behind every technical "
+               "claim. Label claims CONFIRMED (directly in the evidence) or HYPOTHESIS (inferred). If the "
+               "evidence is not enough, say: Cannot be determined from the evidence, and say what to look "
+               "at next. Method bodies are NOT decompiled, so never claim to know what a method does "
+               "internally. If you need more data, reply with ONLY a JSON object such as "
+               "{\"tool\":\"search_code\",\"args\":{\"query\":\"login\"}}. Allowed tools: "
+               "inspect_apk_manifest, list_permissions, list_components, search_apk_strings, list_classes, "
+               "inspect_class, inspect_method, search_code, inspect_dependencies, "
+               "inspect_network_references, summarize_apk. Otherwise answer in plain text, short, for a "
+               "phone screen. If asked to write code, write your own original implementation of the "
+               "behavior and say it is not the app's source code.")
 
     def on_attach(self, instance):
+        self.flash("Pick a file to attach")
+        self._pick_file("attach")
+
+    def on_apk_pick(self):
+        self._pick_file("apk")
+
+    def _pick_file(self, mode):
         try:
             from jnius import autoclass
             from android import activity
             PA = autoclass("org.kivy.android.PythonActivity")
             Intent = autoclass("android.content.Intent")
-            i = Intent(Intent.ACTION_GET_CONTENT)
-            i.setType("*/*")
+            i = Intent(Intent.ACTION_OPEN_DOCUMENT)
             i.addCategory(Intent.CATEGORY_OPENABLE)
+            i.setType("*/*")
+            self._pick_mode = mode
             activity.unbind(on_activity_result=self.on_attach_result)
             activity.bind(on_activity_result=self.on_attach_result)
-            PA.mActivity.startActivityForResult(Intent.createChooser(i, "Attach a file"), 4343)
+            PA.mActivity.startActivityForResult(i, 4343)
+            return True
         except Exception as e:
-            self.err("attach", e)
-            self.add_msg("Could not open the file picker: " + str(e)[:150], False)
+            self.err("file picker", e)
+            self.add_msg("Could not open the file picker: " + str(e)[:160], False)
+            return False
 
     def on_attach_result(self, request, result, data):
         if request != 4343:
@@ -2557,10 +2592,17 @@ class BusinessDashboard(App):
             return
         if uri is None:
             return
-        threading.Thread(target=self._attach_read, args=(uri,), daemon=True).start()
+        mode = getattr(self, "_pick_mode", "attach")
+        threading.Thread(target=self._attach_read, args=(uri, mode), daemon=True).start()
 
-    def _attach_read(self, uri):
-        name, mime, raw, err = "file", "", b"", ""
+    def _say(self, text):
+        Clock.schedule_once(lambda dt: self.add_msg(text, False), 0)
+
+    def _prog(self, text):
+        Clock.schedule_once(lambda dt: self.flash(text), 0)
+
+    def _attach_read(self, uri, mode):
+        name, mime, err, fd = "file", "", "", None
         try:
             from jnius import autoclass
             PA = autoclass("org.kivy.android.PythonActivity")
@@ -2583,6 +2625,23 @@ class BusinessDashboard(App):
                 pass
             pfd = res.openFileDescriptor(uri, "r")
             fd = pfd.detachFd()
+        except Exception as e:
+            err = str(e)[:150]
+        if fd is None:
+            self._say("Could not open that file. " + err)
+            return
+        low = name.lower()
+        if mode == "apk" or low.endswith(self.APK_EXT) or mime == "application/vnd.android.package-archive":
+            self._apk_import(fd, name)
+            return
+        if mode in ("prog", "doc") or low.endswith(self.PROG_BIN_EXT):
+            if mode == "doc":
+                self._doc_import(fd, name)
+            else:
+                self._prog_import(fd, name)
+            return
+        raw = b""
+        try:
             with os.fdopen(fd, "rb") as f:
                 raw = f.read(self.ATTACH_MAX + 1)
         except Exception as e:
@@ -2609,7 +2668,7 @@ class BusinessDashboard(App):
                 t = raw.decode("utf-8")
                 if "\x00" in t[:2000]:
                     raise ValueError("binary")
-                parts = [{"text": "File " + name + ":" + chr(10) + t[:120000]}]
+                parts = [{"text": "File " + name + ":\n" + t[:120000]}]
             except Exception:
                 parts = None
         if parts is None:
@@ -2626,7 +2685,7 @@ class BusinessDashboard(App):
         self.attach = None
         if not text:
             text = "Summarize this file."
-        shown = text + chr(10) + "(file: " + att["name"] + ")"
+        shown = text + "\n(file: " + att["name"] + ")"
         self.add_msg(shown, True)
         self.hide_chips()
         try:
@@ -2640,6 +2699,1068 @@ class BusinessDashboard(App):
             self._ask_cloud(text)
         finally:
             self._att_once = None
+
+    # ---------- APK Analyzer (static: reads the file, never runs or installs it) ----------
+
+    def _apk_root(self):
+        p = os.path.join(self.user_data_dir, "apk_ws")
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def _apk_ws(self):
+        root = os.path.realpath(self._apk_root())
+        ws = getattr(self, "apk_cur", None)
+        if not ws:
+            try:
+                ws = open(os.path.join(root, "current.txt")).read().strip()
+            except Exception:
+                ws = None
+        if ws and os.path.dirname(os.path.realpath(ws)) == root and os.path.isfile(os.path.join(ws, "info.json")):
+            self.apk_cur = ws
+            return ws
+        return None
+
+    def _apk_import(self, fd, name):
+        import shutil
+        import apkscan
+        if getattr(self, "apk_busy", False):
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            self._say("An APK is already being analyzed. Say: apk cancel")
+            return
+        self.apk_cancel = False
+        self.apk_busy = True
+        root = self._apk_root()
+        inc = os.path.join(root, "incoming.part")
+        try:
+            limit = int(self.cfg.get("apk_max_mb", 600)) << 20
+            free = shutil.disk_usage(root).free
+            if free < 200 * 1024 * 1024:
+                raise apkscan.ApkError("Less than 200 MB of free storage. Free some space first.")
+            self._say("Importing " + name + ". It is only read, never installed or run.")
+            with os.fdopen(fd, "rb") as f:
+                apkscan.copy_stream(f, inc, limit, lambda: self.apk_cancel,
+                                    lambda n: self._prog("Copied %d MB" % (n >> 20)))
+            if free < 2 * os.path.getsize(inc) + 100 * 1024 * 1024:
+                raise apkscan.ApkError("Not enough free storage to analyze this file.")
+            info = apkscan.analyze(inc, root, name, self._prog, lambda: self.apk_cancel, limit)
+            ws = info["ws"]
+            self.apk_cur = ws
+            try:
+                open(os.path.join(root, "current.txt"), "w").write(ws)
+            except Exception:
+                pass
+            head = ("APK analyzed" + (" (from cache)" if info.get("cached") else "") + "\n"
+                    + "File: " + str(info.get("file_name")) + "\n"
+                    + "Size: %d KB\n" % (info["size"] // 1024)
+                    + "SHA-256: " + info["sha256"] + "\n"
+                    + "Type: " + ("split bundle, base APK analyzed" if info["archive"] == "bundle" else "APK") + "\n\n")
+            self._say(head + apkscan.run_tool(ws, "summarize_apk", {})
+                      + "\n\nNext: apk report | apk permissions | apk ask <question> | apk help")
+        except apkscan.Cancelled:
+            self._say("Analysis cancelled. Partial files were removed.")
+        except apkscan.ApkError as e:
+            self._say("Could not analyze this file: " + str(e))
+        except MemoryError:
+            self._say("Ran out of memory. Try: apk limit 200, or analyze on a computer.")
+        except Exception as e:
+            self.err("apk import", e)
+            self._say("APK analysis failed: " + str(e)[:200])
+        finally:
+            self.apk_busy = False
+            try:
+                if os.path.exists(inc):
+                    os.remove(inc)
+            except Exception:
+                pass
+
+    def _apk_async(self, fn, label):
+        def work():
+            try:
+                out = fn()
+            except Exception as e:
+                if e.__class__.__name__ not in ("ToolError", "ApkError"):
+                    self.err("apk tool", e)
+                out = "APK tool: " + str(e)[:300]
+            self._say(out)
+        threading.Thread(target=work, daemon=True).start()
+        return label
+
+    def _save_download(self, fname, data, mime):
+        from jnius import autoclass
+        PA = autoclass("org.kivy.android.PythonActivity")
+        ContentValues = autoclass("android.content.ContentValues")
+        Downloads = autoclass("android.provider.MediaStore$Downloads")
+        cr = PA.mActivity.getContentResolver()
+        cv = ContentValues()
+        cv.put("_display_name", fname)
+        cv.put("mime_type", mime)
+        cv.put("relative_path", "Download")
+        uri = cr.insert(Downloads.EXTERNAL_CONTENT_URI, cv)
+        out = cr.openOutputStream(uri)
+        out.write(data, 0, len(data))
+        out.close()
+
+    def apk_route(self, text, low):
+        if not (low == "apk" or low.startswith("apk ")
+                or low.startswith(("analyze apk", "analyse apk", "inspect apk"))):
+            return None
+        try:
+            import apkscan
+        except Exception as e:
+            self.err("apk import", e)
+            return "The APK Analyzer file (apkscan.py) is not in this build."
+        if not low.startswith("apk"):
+            self.on_apk_pick()
+            return "Choose the APK in the file picker. It is only read, never installed or run."
+        rest = text[3:].strip()
+        sub = rest.split(" ", 1)[0].lower() if rest else ""
+        arg = rest.split(" ", 1)[1].strip() if " " in rest else ""
+        ws = self._apk_ws()
+        if sub in ("", "help"):
+            self.add_msg(self.APK_HELP, False)
+            return "APK Analyzer help is above."
+        if sub in ("pick", "import", "open", "load"):
+            self.on_apk_pick()
+            return "Choose the APK in the file picker. It is only read, never installed or run."
+        if sub == "cancel":
+            self.apk_cancel = True
+            return "Cancelling. Partial files will be removed."
+        if sub == "limit":
+            if arg.isdigit() and 20 <= int(arg) <= 2000:
+                self.cfg["apk_max_mb"] = int(arg)
+                return "APK size limit set to %s MB until the app restarts." % arg
+            return "Use: apk limit 300 (between 20 and 2000 MB). Now: %s MB." % self.cfg.get("apk_max_mb", 600)
+        if sub == "jadx":
+            self.add_msg("JADX and Apktool need Java, so they cannot run inside this app. "
+                         "In Termux you can try: pkg install openjdk-17, download JADX from "
+                         "github.com/skylot/jadx/releases, then: jadx -d out file.apk. I have not "
+                         "tested that on your phone. The built-in analysis (apk summary, apk class ...) "
+                         "needs no Java.", False)
+            return "JADX notes are above."
+        if sub == "cloud":
+            if arg.lower() in ("on", "yes", "enable"):
+                self.cfg["apk_cloud"] = True
+                return ("Cloud help is ON for this session. When local Gemma cannot answer, Gemini gets your "
+                        "question plus up to ~7000 characters of APK findings (class and method names, strings, "
+                        "URLs, permissions). Not sent: the APK file, certificates, other files. Secret-looking "
+                        "values and emails are removed. You will see what is sent each time.")
+            if arg.lower() in ("off", "no", "disable"):
+                self.cfg["apk_cloud"] = False
+                return "Cloud help is OFF. Everything stays on the phone."
+            return "Cloud help is %s. Use: apk cloud on / off" % ("ON" if self.cfg.get("apk_cloud") else "OFF")
+        if sub == "delete":
+            root = self._apk_root()
+            try:
+                if arg.lower() == "all":
+                    apkscan.delete_workspace(root)
+                    self.apk_cur = None
+                    return "All APK analysis data deleted."
+                if not ws:
+                    return "No APK is loaded."
+                apkscan.delete_workspace(root, ws)
+                self.apk_cur = None
+                return "Deleted the analysis of the current APK."
+            except Exception as e:
+                self.err("apk delete", e)
+                return "Could not delete: " + str(e)[:120]
+        if sub == "status":
+            if not ws:
+                return "No APK loaded. Use: apk pick"
+            i = apkscan.load_info(ws)
+            return "Loaded: %s v%s (%d KB)" % (i["package"], i.get("version_name"), i["size"] // 1024)
+        if not ws:
+            return "No APK loaded yet. Use: apk pick, or tap + and choose an APK."
+        if sub == "report":
+            save = arg.lower() == "save"
+
+            def rep():
+                i = apkscan.load_info(ws)
+                i["ws"] = ws
+                body = apkscan.build_report(i)
+                if save:
+                    fname = "RAMBO_apk_report_" + i["package"] + ".txt"
+                    self._save_download(fname, body.encode("utf-8"), "text/plain")
+                    return "Report saved to Downloads as " + fname
+                return body
+            return self._apk_async(rep, "Building the report...")
+        if sub == "ask":
+            if not arg:
+                return "Use: apk ask <your question>"
+            return self._apk_ask(arg)
+        if sub == "tool":
+            def tool():
+                try:
+                    req = json.loads(arg)
+                except Exception:
+                    raise apkscan.ToolError("Tool request must be JSON, like {\"tool\":\"list_permissions\",\"args\":{}}")
+                if not isinstance(req, dict):
+                    raise apkscan.ToolError("Tool request must be a JSON object.")
+                return apkscan.run_tool(ws, req.get("tool"), req.get("args"))
+            return self._apk_async(tool, "Running tool...")
+        table = {"summary": ("summarize_apk", {}), "manifest": ("inspect_apk_manifest", {}),
+                 "permissions": ("list_permissions", {}), "perms": ("list_permissions", {}),
+                 "deps": ("inspect_dependencies", {}), "libs": ("inspect_dependencies", {}),
+                 "network": ("inspect_network_references", {}), "net": ("inspect_network_references", {}),
+                 "urls": ("inspect_network_references", {})}
+        call = None
+        if sub in table:
+            call = table[sub]
+        elif sub in ("components", "comps"):
+            call = ("list_components", {"exported_only": True} if arg.lower().startswith("export") else {})
+        elif sub == "strings" and arg:
+            call = ("search_apk_strings", {"query": arg})
+        elif sub == "classes":
+            call = ("list_classes", {"query": arg})
+        elif sub == "class" and arg:
+            call = ("inspect_class", {"name": arg})
+        elif sub == "method" and " " in arg:
+            c, m = arg.split(" ", 1)
+            call = ("inspect_method", {"class": c, "method": m.strip()})
+        elif sub == "search" and arg:
+            call = ("search_code", {"query": arg})
+        if call is not None:
+            return self._apk_async(lambda: apkscan.run_tool(ws, call[0], call[1]), "Looking...")
+        if sub == "files":
+            return self._apk_async(lambda: apkscan.t_files(ws, {"query": arg}), "Listing files...")
+        if sub == "file" and arg:
+            return self._apk_async(lambda: apkscan.read_file(ws, arg), "Reading the file...")
+        return "Unknown APK command. Say: apk help"
+
+    def _apk_evidence(self, ws, q):
+        import apkscan
+        ql = q.lower()
+        parts = []
+        done = set()
+
+        def add(name, args=None):
+            key = name + json.dumps(args or {}, sort_keys=True)
+            if key in done:
+                return
+            done.add(key)
+            try:
+                parts.append("## " + name + (" " + json.dumps(args) if args else "") + "\n"
+                             + apkscan.run_tool(ws, name, args or {}))
+            except Exception:
+                pass
+        add("summarize_apk")
+        if any(w in ql for w in ("permission", "privacy", "access", "risk", "security")):
+            add("list_permissions")
+        if any(w in ql for w in ("component", "activity", "service", "receiver", "provider", "export",
+                                 "architecture", "how does", "how it works", "explain", "risk", "security")):
+            add("list_components", {"exported_only": True} if "export" in ql or "risk" in ql or "security" in ql else {})
+        if any(w in ql for w in ("network", "server", "api", "url", "http", "communicat", "endpoint",
+                                 "login", "auth", "internet", "risk", "security")):
+            add("inspect_network_references")
+        if any(w in ql for w in ("librar", "depend", "framework", "built", "sdk", "explain", "store", "setting")):
+            add("inspect_dependencies")
+        if any(w in ql for w in ("login", "auth", "sign in", "signin", "account", "password")):
+            add("search_code", {"query": "login"})
+            add("search_code", {"query": "token"})
+        if any(w in ql for w in ("setting", "stor", "save", "database", "prefs", "preference", "cache")):
+            add("search_code", {"query": "prefs"})
+            add("search_code", {"query": "database"})
+        stop = ("this", "that", "with", "from", "what", "where", "which", "does", "explain", "find",
+                "show", "code", "about", "have", "into", "their", "there", "responsible", "feature",
+                "application", "work", "works", "help", "recreate", "generate", "implementation",
+                "identify", "relevant", "available", "found", "please")
+        for w in [w for w in re.findall(r"[A-Za-z_][A-Za-z0-9_\.]{3,}", q) if w.lower() not in stop][:4]:
+            if "." in w and w.count(".") >= 2:
+                add("inspect_class", {"name": w})
+            else:
+                add("search_code", {"query": w})
+        return "\n\n".join(parts)[:7000]
+
+    def _apk_llm_local(self, sysm, user, ws):
+        import apkscan
+        for _round in range(3):
+            txt = gemma_chat(sysm, user, max_tokens=600)
+            t = txt.strip()
+            if t.startswith("```"):
+                t = t.strip("`").replace("json", "", 1).strip()
+            if t.startswith("{") and t.endswith("}"):
+                try:
+                    req = json.loads(t)
+                except Exception:
+                    return txt
+                if isinstance(req, dict) and "tool" in req:
+                    try:
+                        out = apkscan.run_tool(ws, req.get("tool"), req.get("args"))
+                    except Exception as e:
+                        out = "Tool refused: " + str(e)[:200]
+                    user += "\n\n## TOOL RESULT " + json.dumps(req)[:200] + "\n" + out[:3000]
+                    continue
+            return txt
+        return gemma_chat(sysm, user + "\n\nAnswer now with the evidence you have. Do not request more tools.", max_tokens=600)
+
+    def _apk_ask(self, q):
+        ws = self._apk_ws()
+        if not ws:
+            return "No APK loaded yet. Use: apk pick"
+
+        def work():
+            import apkscan
+            ev = self._apk_evidence(ws, q)
+            user = "QUESTION: " + q + "\n\nEVIDENCE FROM THE APK:\n" + ev
+            ans = ""
+            try:
+                ans = self._apk_llm_local(self.APK_SYS, user, ws)
+            except Exception as e:
+                self.err("apk gemma", str(e)[:100])
+                ans = ""
+            if ans:
+                self._say(ans)
+                return
+            if self.cfg.get("apk_cloud") and self.gem_ok():
+                safe = apkscan.scrub(user)
+                self._say("Local Gemma did not answer. Sending to Gemini: your question and %d characters "
+                          "of APK findings (names, strings, URLs, permissions). Not sent: the APK file, "
+                          "certificates or other files. Secret-looking values and emails were removed." % len(safe))
+                body = json.dumps({"systemInstruction": {"parts": [{"text": self.APK_SYS}]},
+                                   "contents": [{"role": "user", "parts": [{"text": safe}]}]}).encode()
+                code, raw = gemini_try(self.gem_key(), body)
+                if code == 200:
+                    try:
+                        self._say(json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip())
+                        return
+                    except Exception as e:
+                        self.err("apk gemini parse", e)
+                self._say("Gemini could not answer (code %s). Here is the evidence I found:\n\n%s" % (code, ev[:3000]))
+                return
+            self._say("Local Gemma did not answer (start it in Termux). To let Gemini help, say: apk cloud on. "
+                      "It shows what is sent. Here is what I found in the APK:\n\n" + ev[:3000])
+        threading.Thread(target=work, daemon=True).start()
+        return "Looking through the APK..."
+
+    # ---------- auto run: screen control through Accessibility ----------
+
+    def _auto_acc_help(self):
+        on = False
+        try:
+            from jnius import autoclass
+            on = bool(autoclass("org.rambo.acc.RamboAccService").isOn())
+        except Exception:
+            on = False
+        if not on:
+            return " You cannot tap inside other apps (Accessibility is off, so do not use acc commands)."
+        return (" You CAN control the phone screen with these commands: acc screen (reads the text on "
+                "screen; the result shows in the log as WEB SCREEN on your next turn), acc tap TEXT "
+                "(taps a visible button or label), acc type TEXT, acc scroll down, acc scroll up, "
+                "acc back, acc home. After you open an app, use acc screen in your NEXT step, because "
+                "the app needs time to load. Read the screen before you tap. Never tap or type anything "
+                "about payments, purchases, deleting, uninstalling or passwords: use the question field "
+                "and ask the user instead.")
+
+    def _auto_acc(self, pid, cm):
+        body = cm.strip()[4:].strip().lower()
+        ok = body in ("screen", "back", "home", "paste", "scroll down", "scroll up") or \
+            body.startswith(("tap ", "type ", "clip "))
+        if not ok:
+            self.db.add_plog(pid, "run", cm + " -> not allowed in auto run")
+            return
+        risky = ("pay", "buy", "purchase", "checkout", "place order", "order now", "delete",
+                 "uninstall", "transfer", "send money", "factory reset", "erase", "subscribe",
+                 "password", "passcode", "pin")
+        if body.startswith(("tap ", "type ")) and any(w in body for w in risky):
+            self.db.add_plog(pid, "ask", "I did not run '" + cm + "' because it could spend money, delete "
+                             "something or touch a password. Tell me if you want me to do it.")
+            self._auto_end(pid, "waiting", None)
+            return
+        short, full = self.acc_run(cm)
+        if short.startswith(("Accessibility is OFF", "Accessibility code is not")):
+            self.db.add_plog(pid, "ask", short + " Type: acc settings, turn it on, then tap AUTO RUN.")
+            self._auto_end(pid, "waiting", None)
+            return
+        self.db.add_plog(pid, "run", cm + " -> " + short)
+        if full:
+            self.db.add_plog(pid, "run", "WEB SCREEN " + " | ".join(full.splitlines())[:1600])
+
+    # ---------- v47: Program Analyzer, document reader, Gemma booster ----------
+
+    PROG_BIN_EXT = (".so", ".elf", ".exe", ".dll", ".bin", ".o", ".out", ".dex", ".jar", ".class")
+    PROG_HELP = ("Program Analyzer. Reads any file or program. It never runs, installs or imports it.\n"
+                 "prog pick (or tap + and choose a binary)\n"
+                 "prog summary | imports [TEXT] | symbols [TEXT] | function NAME\n"
+                 "prog strings TEXT | search TEXT | source [FROM TO] | entries [TEXT]\n"
+                 "prog report | prog report save\n"
+                 "prog ask QUESTION (Gemma answers from the extracted evidence)\n"
+                 "Teaching: prog teach FACT | prog lessons [TEXT] | prog forget N\n"
+                 "prog good (keep the last answer as an example) | prog bad\n"
+                 "prog cloud on / off | prog cancel | prog delete [all] | prog status\n"
+                 "Learning (nothing is learned until you approve): prog review | approve N|all | reject N|all | prog lessons export\n"
+                 "Documents: doc pick | doc ask QUESTION | doc deep QUESTION | doc summary | doc outline | doc find TEXT | doc list | doc use N | doc delete [N|all]\n"
+                 "Knowledge: kb QUESTION | kb add TITLE: NOTE | kb list\n"
+                 "Apps: agent TASK | agent stop | agent yes/no | agent cloud on/off | agent stats (say: agent help)\n"
+                 "Boost: boost eval | boost tips | boost status")
+    PROG_SYS = ("You are RAMBO AI's program analysis assistant. You get EVIDENCE from static analysis of a "
+                "file: file type, imports, symbols, function names, strings, source structure. Rules: use only "
+                "the evidence. Name the import, symbol, string or line behind every technical claim. Label "
+                "claims CONFIRMED (directly in the evidence) or HYPOTHESIS (inferred). If the evidence is not "
+                "enough, say: Cannot be determined from the evidence, and say what to look at next. Machine "
+                "code is NOT disassembled, so never claim to know what a binary function does internally. "
+                "NOTES FROM THE USER may help but the evidence wins if they disagree. If you need more data, "
+                "reply with ONLY a JSON object such as {\"tool\":\"search_code\",\"args\":{\"query\":\"login\"}}. "
+                "Allowed tools: summarize_program, list_symbols, list_imports, search_strings, list_entries, "
+                "read_source, show_function, search_code, recall_lessons, list_capabilities, call_graph, explain_api. REFERENCE NOTES, when given, are general background only. Otherwise answer in plain text, short, "
+                "for a phone screen. If asked to recreate behavior, write your own original implementation "
+                "and say it is not the original source code. Do not help hide, spread or weaponize malware.")
+
+    def _boost_llm(self):
+        def llm(sysm, user, mt):
+            return gemma_chat(sysm or "You are a careful assistant. Answer briefly.", user, max_tokens=mt)
+        return llm
+
+    def _prog_root(self):
+        p = os.path.join(self.user_data_dir, "prog_ws")
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def _prog_ws(self):
+        root = os.path.realpath(self._prog_root())
+        ws = getattr(self, "prog_cur", None)
+        if not ws:
+            try:
+                ws = open(os.path.join(root, "current.txt")).read().strip()
+            except Exception:
+                ws = None
+        if ws and os.path.dirname(os.path.realpath(ws)) == root and os.path.isfile(os.path.join(ws, "info.json")):
+            self.prog_cur = ws
+            return ws
+        return None
+
+    def on_prog_pick(self):
+        self._pick_file("prog")
+
+    def _prog_import(self, fd, name):
+        import shutil
+        import proganalyze as PA
+        if getattr(self, "prog_busy", False):
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            self._say("A file is already being analyzed. Say: prog cancel")
+            return
+        self.prog_cancel = False
+        self.prog_busy = True
+        root = self._prog_root()
+        inc = os.path.join(root, "incoming.part")
+        try:
+            limit = int(self.cfg.get("prog_max_mb", 300)) << 20
+            if shutil.disk_usage(root).free < 150 * 1024 * 1024:
+                raise PA.ProgError("Less than 150 MB of free storage. Free some space first.")
+            self._say("Importing " + name + ". It is only read, never run or installed.")
+            with os.fdopen(fd, "rb") as f:
+                PA.copy_stream(f, inc, limit, lambda: self.prog_cancel,
+                               lambda n: self._prog(("Copied %d MB" % (n >> 20))))
+            info = PA.analyze(inc, root, name, self._prog, lambda: self.prog_cancel, limit)
+            ws = info["ws"]
+            self.prog_cur = ws
+            try:
+                open(os.path.join(root, "current.txt"), "w").write(ws)
+            except Exception:
+                pass
+            try:
+                PA.record_pattern(root, info)
+            except Exception as e:
+                self.err("prog pattern", e)
+            self._say("Analyzed" + (" (from cache)" if info.get("cached") else "") + "\n"
+                      + PA.run_tool(ws, "summarize_program", {})
+                      + "\n\nNext: prog ask <question> | prog report | prog help")
+        except PA.Cancelled:
+            self._say("Analysis cancelled. Partial files were removed.")
+        except PA.ProgError as e:
+            self._say("Could not analyze this file: " + str(e))
+        except MemoryError:
+            self._say("Ran out of memory. Try a smaller file.")
+        except Exception as e:
+            self.err("prog import", e)
+            self._say("Analysis failed: " + str(e)[:200])
+        finally:
+            self.prog_busy = False
+            try:
+                if os.path.exists(inc):
+                    os.remove(inc)
+            except Exception:
+                pass
+
+    def _prog_async(self, fn, label):
+        def work():
+            try:
+                out = fn()
+            except Exception as e:
+                if e.__class__.__name__ not in ("ToolError", "ProgError", "BoostError"):
+                    self.err("prog tool", e)
+                out = "Error: " + str(e)[:300]
+            self._say(out)
+        threading.Thread(target=work, daemon=True).start()
+        return label
+
+    def _prog_evidence(self, ws, q):
+        import proganalyze as PA
+        ql = q.lower()
+        parts = []
+        done = set()
+
+        def add(name, args=None):
+            key = name + json.dumps(args or {}, sort_keys=True)
+            if key in done:
+                return
+            done.add(key)
+            try:
+                parts.append("## " + name + (" " + json.dumps(args) if args else "") + "\n"
+                             + PA.run_tool(ws, name, args or {}))
+            except Exception:
+                pass
+        add("summarize_program")
+        info = PA.load_info(ws)
+        if any(w in ql for w in ("safe", "risk", "malware", "danger", "virus", "behav", "network", "permission", "capab", "suspicious", "what does", "analy")):
+            add("list_capabilities")
+        if "py" in info and any(w in ql for w in ("flow", "calls", "who calls", "structure", "work", "how", "main", "recreate", "explain")):
+            add("call_graph")
+        if any(w in ql for w in ("import", "call", "network", "system", "behav", "what does", "how does",
+                                 "do", "risk", "security", "explain", "work")):
+            add("list_imports")
+        if any(w in ql for w in ("function", "class", "method", "structure", "how", "explain", "work", "main")):
+            add("list_symbols")
+        if "lines" in info and any(w in ql for w in ("how", "explain", "work", "flow", "logic", "main", "recreate")):
+            add("read_source", {"start": 1, "end": 70})
+        stop = ("this", "that", "with", "from", "what", "where", "which", "does", "explain", "find", "show",
+                "code", "about", "have", "into", "their", "there", "program", "file", "work", "works",
+                "please", "function", "functions", "recreate", "write")
+        for w in [w for w in re.findall(r"[A-Za-z_][A-Za-z0-9_\.]{3,}", q) if w.lower() not in stop][:4]:
+            add("search_code", {"query": w})
+        return "\n\n".join(parts)[:7500]
+
+    def _prog_ask(self, q):
+        ws = self._prog_ws()
+        if not ws:
+            return "No file loaded yet. Use: prog pick"
+
+        def work():
+            import proganalyze as PA
+            import gemmaboost as GB
+            root = self._prog_root()
+            info = PA.load_info(ws)
+            ev = self._prog_evidence(ws, q)
+            les = GB.lessons_block(PA.search_lessons(root, q + " " + info.get("kind", ""), 5))
+            kbt = GB.kb_block(GB.kb_sections(self.user_data_dir), q + " " + info.get("kind", ""), 3, 800)
+            user = les + kbt + "QUESTION: " + q + "\n\nEVIDENCE:\n" + ev
+            ans = ""
+            try:
+                ans = GB.tool_loop(self._boost_llm(), self.PROG_SYS, user,
+                                   lambda n, a: PA.run_tool(ws, n, a))
+            except Exception as e:
+                self.err("prog gemma", str(e)[:100])
+            if not ans and self.cfg.get("prog_cloud") and self.gem_ok():
+                safe = PA.scrub(user)
+                self._say("Local Gemma did not answer. Sending to Gemini: your question plus %d characters of "
+                          "findings (names, imports, strings). Not sent: the file itself. Secret-looking values "
+                          "and emails were removed." % len(safe))
+                body = json.dumps({"systemInstruction": {"parts": [{"text": self.PROG_SYS}]},
+                                   "contents": [{"role": "user", "parts": [{"text": safe}]}]}).encode()
+                code, raw = gemini_try(self.gem_key(), body)
+                if code == 200:
+                    try:
+                        ans = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    except Exception as e:
+                        self.err("prog gemini parse", e)
+            if not ans:
+                self._say("Local Gemma did not answer (start it in Termux). To let Gemini help say: prog cloud on. "
+                          "Evidence found:\n\n" + ev[:3000])
+                return
+            bad = GB.unsupported_names(ans, ev + " " + les)
+            self.prog_last = None if bad else (q, ans)
+            if not bad:
+                try:
+                    PA.add_pending(root, q, ans)
+                except Exception:
+                    pass
+            if bad:
+                ans += ("\n\nCheck: these names are not in the extracted evidence, so they may be wrong: "
+                        + ", ".join(bad) + " (prog good is disabled for this answer.)")
+            self._say(ans + "\n\n(Right? prog good. Wrong? prog bad, then prog teach <fact>. Later: prog review.)")
+        threading.Thread(target=work, daemon=True).start()
+        return "Looking through the file..."
+
+    def prog_route(self, text, low):
+        if not (low in ("prog", "doc", "boost", "kb") or low.startswith(("prog ", "doc ", "boost ", "kb ",
+                                                                 "analyze program", "reverse engineer"))):
+            return None
+        try:
+            import proganalyze as PA
+            import gemmaboost as GB
+        except Exception as e:
+            self.err("prog import", e)
+            return "The analyzer files (proganalyze.py, gemmaboost.py) are not in this build."
+        if not low.startswith(("prog", "doc", "boost", "kb")):
+            self.on_prog_pick()
+            return "Choose the file in the file picker. It is only read, never run."
+        head = low.split(" ", 1)[0]
+        rest = text[len(head):].strip()
+        sub = rest.split(" ", 1)[0].lower() if rest else ""
+        arg = rest.split(" ", 1)[1].strip() if " " in rest else ""
+        if head == "doc":
+            return self._doc_route(rest, sub, arg, GB)
+        if head == "kb":
+            return self._kb_route(rest, sub, arg, GB)
+        if head == "boost":
+            return self._boost_route(sub, GB, PA)
+        root = self._prog_root()
+        ws = self._prog_ws()
+        if sub in ("", "help"):
+            self.add_msg(self.PROG_HELP, False)
+            return "Program Analyzer help is above."
+        if sub in ("pick", "import", "open", "load"):
+            self.on_prog_pick()
+            return "Choose the file in the file picker. It is only read, never run."
+        if sub == "cancel":
+            self.prog_cancel = True
+            return "Cancelling. Partial files will be removed."
+        if sub == "review":
+            pend = PA.list_pending(root)
+            if not pend:
+                return "Nothing waiting for approval. Answers you do not mark good are never learned."
+            return ("Waiting for your approval (%d). approve N | approve all | reject N | reject all\n" % len(pend)
+                    + "\n".join("[%d] %s" % (r["id"], r["text"][:230]) for r in pend[-8:]))
+        if sub in ("approve", "reject"):
+            which = "all" if arg.lower() == "all" else (int(arg) if arg.isdigit() else None)
+            if which is None:
+                return "Use: prog %s <number from prog review> or prog %s all" % (sub, sub)
+            n = PA.approve_pending(root, which) if sub == "approve" else PA.reject_pending(root, which)
+            return ("%d answer(s) %s." % (n, "learned as examples" if sub == "approve" else "discarded")) if n else "No such waiting answer."
+        if sub == "teach":
+            try:
+                n = PA.add_lesson(root, arg, "fact")
+                return "Learned (#%d). Gemma will see this when a question matches it." % n
+            except Exception as e:
+                return "Could not save: " + str(e)[:100]
+        if sub == "lessons" and arg.lower() == "export":
+            rows = [r for r in PA.list_lessons(root) if r["kind"] != "pending"]
+            body = "\n".join("[%s] %s" % (r["kind"], r["text"]) for r in rows) or "No lessons yet."
+            self._save_download("RAMBO_lessons.txt", body.encode("utf-8"), "text/plain")
+            return "Saved %d lessons to Downloads as RAMBO_lessons.txt" % len(rows)
+        if sub == "lessons":
+            rows = PA.search_lessons(root, arg, 12) if arg else PA.list_lessons(root)[-12:]
+            return ("Lessons (%d total):\n" % len(PA.list_lessons(root))
+                    + "\n".join("[%d] (%s) %s" % (r["id"], r["kind"], r["text"][:160]) for r in rows)) if rows else "No lessons yet. Use: prog teach <fact>"
+        if sub == "forget":
+            return "Removed." if arg.isdigit() and PA.forget_lesson(root, int(arg)) else "Use: prog forget <number from prog lessons>"
+        if sub == "good":
+            last = getattr(self, "prog_last", None)
+            if not last:
+                return "Nothing to keep yet. Ask something first: prog ask ..."
+            n = PA.add_lesson(root, "Example. Q: %s A: %s" % (last[0][:150], last[1][:450]), "example")
+            try:
+                PA.reject_pending(root, max([r["id"] for r in PA.list_pending(root)] + [0]))
+            except Exception:
+                pass
+            return "Kept as an example (#%d). Similar questions will see it." % n
+        if sub == "bad":
+            self.prog_last = None
+            return "Not saved. If you know the right fact, teach it: prog teach <fact>"
+        if sub == "cloud":
+            if arg.lower() in ("on", "yes", "enable"):
+                self.cfg["prog_cloud"] = True
+                return ("Cloud help is ON for this session. If local Gemma cannot answer, Gemini gets your question "
+                        "plus up to ~7000 characters of findings. Not sent: the file. Secret-looking values and "
+                        "emails are removed. You see a notice each time.")
+            if arg.lower() in ("off", "no", "disable"):
+                self.cfg["prog_cloud"] = False
+                return "Cloud help is OFF. Everything stays on the phone."
+            return "Cloud help is %s. Use: prog cloud on / off" % ("ON" if self.cfg.get("prog_cloud") else "OFF")
+        if sub == "delete":
+            try:
+                if arg.lower() == "all":
+                    PA.delete_all(root)
+                    self.prog_cur = None
+                    return "All analyzed files deleted. Lessons were kept (they are in prog lessons)."
+                if not ws:
+                    return "No file is loaded."
+                PA.delete_all(root, ws)
+                self.prog_cur = None
+                return "Deleted the analysis of the current file."
+            except Exception as e:
+                return "Could not delete: " + str(e)[:120]
+        if sub == "status":
+            if not ws:
+                return "No file loaded. Use: prog pick"
+            i = PA.load_info(ws)
+            return "Loaded: %s (%s, %d KB)" % (i["file_name"], i["kind"], i["size"] // 1024)
+        if not ws:
+            return "No file loaded yet. Use: prog pick"
+        if sub == "report":
+            save = arg.lower() == "save"
+
+            def rep():
+                i = PA.load_info(ws)
+                body = PA.build_report(i)
+                if save:
+                    fname = "RAMBO_report_" + re.sub(r"[^A-Za-z0-9_.-]", "_", i["file_name"])[:50] + ".txt"
+                    self._save_download(fname, body.encode("utf-8"), "text/plain")
+                    return "Report saved to Downloads as " + fname
+                return body
+            return self._prog_async(rep, "Building the report...")
+        if sub == "ask":
+            if not arg:
+                return "Use: prog ask <your question>"
+            return self._prog_ask(arg)
+        call = None
+        if sub in ("summary", "info"):
+            call = ("summarize_program", {})
+        elif sub in ("imports", "libs"):
+            call = ("list_imports", {"query": arg})
+        elif sub in ("symbols", "functions", "funcs"):
+            call = ("list_symbols", {"query": arg})
+        elif sub == "strings" and arg:
+            call = ("search_strings", {"query": arg})
+        elif sub == "search" and arg:
+            call = ("search_code", {"query": arg})
+        elif sub == "function" and arg:
+            call = ("show_function", {"name": arg})
+        elif sub == "entries":
+            call = ("list_entries", {"query": arg})
+        elif sub == "source":
+            nums = [int(x) for x in arg.split() if x.isdigit()]
+            sargs = {}
+            if nums:
+                sargs["start"] = nums[0]
+            if len(nums) > 1:
+                sargs["end"] = nums[1]
+            call = ("read_source", sargs)
+        if call is not None:
+            return self._prog_async(lambda: PA.run_tool(ws, call[0], call[1]), "Looking...")
+        return "Unknown command. Say: prog help"
+
+    # ----- documents (long text) -----
+
+    def _doc_store(self):
+        import gemmaboost as GB
+        return GB.DocStore(os.path.join(self.user_data_dir, "docs.db"))
+
+    def _doc_import(self, fd, name):
+        import gemmaboost as GB
+        try:
+            with os.fdopen(fd, "rb") as f:
+                raw = f.read(GB.MAX_DOC + 1)
+            text = GB.read_any(raw[:GB.MAX_DOC], name)
+            did, new = self._doc_store().add(name, text)
+            i = self._doc_store().info(did)
+            self._say(("Loaded " if new else "Already loaded ") + "%s: %d characters in %d parts. "
+                      "Ask with: doc ask <question> | doc deep <question> | doc summary | doc outline" % (i[1], i[2], i[3])
+                      + ("" if len(raw) <= GB.MAX_DOC else "\n(Only the first 6 MB was read.)"))
+        except Exception as e:
+            if e.__class__.__name__ != "BoostError":
+                self.err("doc import", e)
+            self._say("Could not read that document: " + str(e)[:150])
+
+    def _doc_route(self, rest, sub, arg, GB):
+        import proganalyze as PA
+        if sub in ("pick", "import", "open", "load"):
+            self._pick_file("doc")
+            return "Choose a text, markdown, code or HTML file. It is read, not run."
+        if sub in ("", "help"):
+            self.add_msg(self.PROG_HELP, False)
+            return "Help is above."
+        st = self._doc_store()
+        if sub == "list":
+            rows = st.docs()
+            cur = st.current()
+            return "\n".join(("* " if r[0] == cur else "  ") + "%d  %s (%d chars)" % (r[0], r[1], r[2]) for r in rows) or "No documents. Use: doc pick"
+        if sub == "use" and arg.isdigit():
+            if st.info(int(arg)):
+                st.set_current(int(arg))
+                return "Now reading document %s." % arg
+            return "No document with that number. Say: doc list"
+        if sub == "delete":
+            if arg.lower() == "all":
+                st.delete()
+                return "All documents deleted."
+            did = int(arg) if arg.isdigit() else st.current()
+            if did is None:
+                return "No document to delete."
+            st.delete(did)
+            return "Deleted document %s." % did
+        did = st.current()
+        if did is None:
+            return "No document loaded. Use: doc pick"
+        llm = self._boost_llm()
+        root = self._prog_root()
+        if sub == "outline":
+            rows = GB.outline(st, did)
+            return "\n".join(rows) or "No headings found. The document is read as plain parts. Use: doc find TEXT"
+        if sub == "find" and arg:
+            hits = st.search(did, arg, 5)
+            return "\n\n".join("[%d] %s" % (n, t[:350]) for n, t in hits) or "Nothing matches those words."
+        if sub == "summary":
+            def summ():
+                return GB.summarize_long(llm, st, did, self._prog, lambda: False)
+            return self._prog_async(summ, "Reading the document in parts. This takes a while on the phone...")
+        deep = sub == "deep"
+        question = arg if sub in ("ask", "deep") else rest
+        if not question:
+            return "Use: doc ask <question>"
+
+        def ask():
+            les = GB.lessons_block(PA.search_lessons(root, question, 3))
+            use_deep = deep or GB.looks_hard(question)
+            kbt = GB.kb_block(GB.kb_sections(self.user_data_dir), "reading " + question, 1, 700) if use_deep else ""
+            steps = []
+            if not use_deep:
+                ans, warn, used = GB.answer_doc(llm, st, did, question, les)
+                if warn and not ans.lower().startswith("not stated"):
+                    use_deep = True
+            if use_deep:
+                ans, warn, used, steps = GB.deep_read(llm, st, did, question, les, kbt, self._prog)
+            out = ans + "\n\n(from parts: %s)" % ", ".join(map(str, used))
+            if steps:
+                out += "\n(steps: " + "; ".join(steps) + ")"
+            if warn:
+                out += "\nCheck: " + "; ".join(warn)
+            return out
+        return self._prog_async(ask, "Searching the document..." + (" (deep read: several steps, slower)" if deep else ""))
+
+    def _kb_route(self, rest, sub, arg, GB):
+        secs = GB.kb_sections(self.user_data_dir)
+        if sub in ("", "help"):
+            return "Knowledge notes: kb QUESTION (search) | kb add TITLE: NOTE (save your own) | kb list (%d notes)" % len(secs)
+        if sub == "list":
+            return "\n".join("- " + t for t, _b in secs) or "No notes."
+        if sub == "add":
+            if ":" not in arg or len(arg.split(":", 1)[1].strip()) < 8:
+                return "Use: kb add TITLE: the note text"
+            title, body = arg.split(":", 1)
+            GB.kb_add_note(self.user_data_dir, title, body)
+            return "Saved. Gemma will search this note on later questions."
+        hits = GB.kb_search(secs, rest, 3, 600)
+        return "\n\n".join("%s\n%s" % (t, b) for t, b in hits) or "No notes match. Add one: kb add TITLE: NOTE"
+
+    # ---------- v47: Gemma app agent (Gemma drives your apps; Gemini is an optional backup) ----------
+
+    AGENT_HELP = ("Agent: Gemma operates your apps by reading the screen and tapping, one checked step at a time.\n"
+                  "agent <task in plain words>   e.g. agent open YouTube and search lo-fi music\n"
+                  "agent yes | agent no (answer a confirmation) | agent stop | agent status\n"
+                  "agent cloud on | off (let Gemini help ONLY if Gemma gives unusable replies; sends scrubbed screen text)\n"
+                  "agent stats (how often Gemma finished alone) | prog review / approve (teach it recipes that worked)\\n"
+                  "Needs Accessibility ON for RAMBO AI (acc settings). It will not operate bank, wallet or password apps, "
+                  "never types passwords or card numbers, and asks you before send, buy, delete, install and similar steps.")
+
+    def _agent_phone(self):
+        import appagent as AG
+        app = self
+
+        class P(object):
+            def screen(s):
+                short, full = app.acc_run("acc screen")
+                if short.startswith(("Accessibility is OFF", "Accessibility code is not")):
+                    raise AG.AgentError(short + " Say: acc settings, turn it on, then try again.")
+                if not full:
+                    m = re.search(r"app: (\S+)\)", short)
+                    return (m.group(1) if m else ""), ""
+                head, _, body = full.partition("\n")
+                m = re.match(r"SCREEN \((.*)\)", head)
+                return (m.group(1) if m else ""), body
+
+            def open(s, name):
+                return app.phone_action("open " + name)
+
+            def do(s, act, arg):
+                cmd = {"tap": "acc tap " + arg, "type": "acc type " + arg, "scroll": "acc scroll " + arg,
+                       "back": "acc back", "home": "acc home"}.get(act)
+                if cmd is None:
+                    return True, "ok"
+                short, _full = app.acc_run(cmd)
+                return short.startswith(("Tapped", "Typed", "Scrolled", "Back", "Home")), short
+
+            def resume(s, pkg):
+                from jnius import autoclass
+                act = autoclass("org.kivy.android.PythonActivity").mActivity
+                i = act.getPackageManager().getLaunchIntentForPackage(pkg)
+                if i is not None:
+                    act.startActivity(i)
+        return P()
+
+    def _agent_llm(self):
+        def llm(sysm, user):
+            try:
+                return gemma_chat(sysm, user, max_tokens=220, want_json=True, timeout=120)
+            except Exception:
+                return gemma_chat(sysm, user, max_tokens=220, timeout=120)
+        return llm
+
+    def _agent_cloud(self):
+        if not (self.cfg.get("agent_cloud") and self.gem_ok()):
+            return None
+        import proganalyze as PA
+
+        def fb(sysm, user):
+            body = json.dumps({"systemInstruction": {"parts": [{"text": sysm}]},
+                               "contents": [{"role": "user", "parts": [{"text": PA.scrub(user)}]}]}).encode()
+            code, raw = gemini_try(self.gem_key(), body)
+            if code != 200:
+                raise Exception("Gemini %s" % code)
+            return json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"]
+        return fb
+
+    def _agent_stat(self, status, fallbacks):
+        p = os.path.join(self._prog_root(), "agent_stats.json")
+        try:
+            d = json.load(open(p))
+        except Exception:
+            d = {}
+        d["runs"] = d.get("runs", 0) + 1
+        d[status] = d.get(status, 0) + 1
+        d["cloud_steps"] = d.get("cloud_steps", 0) + fallbacks
+        try:
+            json.dump(d, open(p, "w"))
+        except Exception:
+            pass
+
+    def _agent_start(self, task, pid=None):
+        if getattr(self, "agent_busy", False):
+            return "An agent task is already running. Say: agent stop"
+        self.agent_busy = True
+        self.agent_cancel = False
+        self.agent_wait = None
+
+        def confirm(reason):
+            if pid is not None:
+                return False
+            ev = threading.Event()
+            self.agent_wait = {"ev": ev, "ans": False}
+            self._say("Confirm: I want to " + reason + ". Say: agent yes or agent no (waiting 2 minutes).")
+            try:
+                self.notify("RAMBO AI", "Confirm needed: " + reason[:80])
+            except Exception:
+                pass
+            ev.wait(120)
+            ans = bool(self.agent_wait and self.agent_wait["ans"])
+            self.agent_wait = None
+            return ans
+
+        def say(m):
+            if pid is not None:
+                try:
+                    self.db.add_plog(pid, "run", "agent: " + m)
+                except Exception:
+                    pass
+            else:
+                self._prog(m)
+
+        def work():
+            try:
+                import appagent as AG
+                import gemmaboost as GB
+                import proganalyze as PA
+                root = self._prog_root()
+                rows = [r for r in PA.search_lessons(root, task, 6) if "Recipe for" in r["text"]][:2]
+                rec = ("STEPS THAT WORKED BEFORE (approved by the user):\n" + "\n".join("- " + r["text"][:300] for r in rows) + "\n\n") if rows else ""
+                kbt = GB.kb_block(GB.kb_sections(self.user_data_dir), "operating apps flows " + task, 2, 700)
+                res = AG.run_agent(task, self._agent_llm(), self._agent_phone(), say, confirm,
+                                   lambda: self.agent_cancel, rec, kbt, self._agent_cloud())
+                self._agent_stat(res["status"], res.get("fallbacks", 0))
+                out = res["answer"]
+                if res["steps"]:
+                    out += "\n(%d steps%s)" % (len(res["steps"]), ", Gemini helped %d time(s)" % res["fallbacks"] if res.get("fallbacks") else ", Gemma only")
+                if res["status"] == "done" and res["steps"]:
+                    try:
+                        PA.add_pending(root, "agent: " + task, AG.recipe_text(task, res["steps"]))
+                        out += "\nIf this worked well: prog review, then prog approve N, so I can reuse the steps."
+                    except Exception:
+                        pass
+                if pid is not None:
+                    self.db.add_plog(pid, "run", "agent result (" + res["status"] + "): " + out[:600])
+                else:
+                    self._say(out)
+            except Exception as e:
+                self.err("agent", e)
+                msg = "Agent error: " + str(e)[:200]
+                if pid is not None:
+                    try:
+                        self.db.add_plog(pid, "run", msg)
+                    except Exception:
+                        pass
+                else:
+                    self._say(msg)
+            finally:
+                self.agent_busy = False
+        threading.Thread(target=work, daemon=True).start()
+        return "On it. I will read the screen and work step by step. Say: agent stop to cancel."
+
+    def agent_route(self, text, low):
+        if not (low == "agent" or low.startswith("agent ")):
+            return None
+        rest = text[5:].strip()
+        sub = rest.lower()
+        if sub in ("", "help"):
+            self.add_msg(self.AGENT_HELP, False)
+            return "Agent help is above."
+        if sub == "stop":
+            self.agent_cancel = True
+            w = getattr(self, "agent_wait", None)
+            if w:
+                w["ev"].set()
+            return "Stopping after the current step."
+        if sub in ("yes", "no", "y", "n"):
+            w = getattr(self, "agent_wait", None)
+            if not w:
+                return "Nothing is waiting for confirmation."
+            w["ans"] = sub in ("yes", "y")
+            w["ev"].set()
+            return "Okay." if w["ans"] else "Okay, I will not do that."
+        if sub == "status":
+            return "An agent task is running." if getattr(self, "agent_busy", False) else "No agent task is running."
+        if sub.startswith("cloud"):
+            arg = sub[5:].strip()
+            if arg in ("on", "yes"):
+                self.cfg["agent_cloud"] = True
+                return ("Gemini backup is ON for the agent. It is used only when Gemma gives two unusable replies in a row. "
+                        "Then the task, the current app name and the visible screen text (secret-looking values removed) are sent to Gemini.")
+            if arg in ("off", "no"):
+                self.cfg["agent_cloud"] = False
+                return "Gemini backup is OFF. The agent uses Gemma only; nothing leaves the phone."
+            return "Gemini backup is %s. Use: agent cloud on / off" % ("ON" if self.cfg.get("agent_cloud") else "OFF")
+        if sub == "stats":
+            try:
+                d = json.load(open(os.path.join(self._prog_root(), "agent_stats.json")))
+            except Exception:
+                return "No agent runs yet."
+            return ("Agent runs: %d | finished: %d | asked you: %d | stopped by safety: %d | stuck: %d | Gemini steps used: %d"
+                    % (d.get("runs", 0), d.get("done", 0), d.get("ask", 0), d.get("blocked", 0) + d.get("declined", 0),
+                       d.get("stuck", 0) + d.get("limit", 0), d.get("cloud_steps", 0)))
+        return self._agent_start(rest)
+
+    # ----- Gemma booster -----
+
+    def _boost_route(self, sub, GB, PA):
+        root = self._prog_root()
+        if sub == "eval":
+            def run():
+                llm = self._boost_llm()
+                a = GB.run_eval(llm, False)
+                b = GB.run_eval(llm, True)
+                sa, sb = sum(1 for x in a if x[1]), sum(1 for x in b if x[1])
+                hist = GB.save_eval(root, "plain", sa, len(a))
+                hist = GB.save_eval(root, "scaffold", sb, len(b))
+                lines = ["Reading test (%d questions with known answers)" % len(a),
+                         "Plain Gemma: %d/%d" % (sa, len(a)), "Gemma with the booster prompt: %d/%d" % (sb, len(b)), ""]
+                for (q, ok1, a1), (_q, ok2, a2) in zip(a, b):
+                    lines.append("%s | plain %s | booster %s" % (q[:45], "ok" if ok1 else "MISS", "ok" if ok2 else "MISS"))
+                lines.append("\nThis is a small test, so treat it as a rough signal. Run it again after changing "
+                             "models or settings to compare.")
+                return "\n".join(lines)
+            return self._prog_async(run, "Running the reading test (12 short questions)...")
+        if sub == "status":
+            n = len(PA.list_lessons(root))
+            return ("Booster: document index, deep reading (widen words, extract, answer, check, repair), "
+                    "knowledge notes, tool loop, %d approved lessons. Say: boost eval to measure it." % n)
+        return ("Ways to make a small model read better, in order of effect: 1) use a bigger or newer Gemma "
+                "build if your phone can run it (check the model file name in Termux), 2) give it less text at a "
+                "time: doc pick then doc ask (it searches the document and shows only the best parts), 3) teach "
+                "it facts with prog teach, 4) keep answers checked: it flags quotes and numbers that are not in "
+                "the source, 5) run boost eval after any change to see if it helped.")
 
     # ---------- actions from buttons ----------
 
@@ -3080,6 +4201,27 @@ class BusinessDashboard(App):
         if low in ("forget last", "forget the last one", "undo remember"):
             gone = self.db.forget_last()
             return ("Forgot: " + gone) if gone else "Nothing to forget."
+        try:
+            r_ag = self.agent_route(text, low)
+        except Exception as e:
+            self.err("agent route", e)
+            r_ag = "Agent error: " + str(e)[:150]
+        if r_ag is not None:
+            return r_ag
+        try:
+            r_prog = self.prog_route(text, low)
+        except Exception as e:
+            self.err("prog route", e)
+            r_prog = "Program Analyzer error: " + str(e)[:150]
+        if r_prog is not None:
+            return r_prog
+        try:
+            r_apk = self.apk_route(text, low)
+        except Exception as e:
+            self.err("apk route", e)
+            r_apk = "APK Analyzer error: " + str(e)[:150]
+        if r_apk is not None:
+            return r_apk
         r_acc = self.acc_route(text, low)
         if r_acc is not None:
             return r_acc
@@ -3254,8 +4396,15 @@ class BusinessDashboard(App):
             if notes:
                 sp += ("Saved reference notes you wrote earlier. Use them when relevant and do not contradict them: "
                        + " || ".join(notes) + " ")
+            try:
+                import gemmaboost as GB
+                kbt = GB.kb_block(GB.kb_sections(self.user_data_dir), text, 2, 600)
+                if kbt:
+                    sp += " " + kbt
+            except Exception:
+                pass
             sysm = {"role": "system", "content": sp}
-            body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 250,
+            body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 400,
                                     "chat_template_kwargs": {"enable_thinking": False}}).encode()
             rq = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
                                         data=body, headers={"Content-Type": "application/json"})
