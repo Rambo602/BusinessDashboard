@@ -1596,42 +1596,30 @@ class BusinessDashboard(App):
     def build_projects(self):
         sv, c = self._scroll()
         self.proj_sv = sv
-        self._head(c, "NEW PROJECT", MAGENTA)
-        self.proj_name = mk_input("Project name (business, game, workout...)")
-        c.add_widget(self.proj_name)
-        self.proj_goal = mk_input("Goal: what should it build or do?", multiline=True, height=100)
-        c.add_widget(self.proj_goal)
+        _v69_bar = None  # PROJ_LAYOUT_V69
         try:
-            for _x in self._v68_create():
-                c.add_widget(_x)
+            _v69_bar = self._v69_page(c)
         except Exception as e:
-            self.err("v68 create", e)
-            self._v68_old_create(c)
-
-        self._head(c, "YOUR PROJECTS (tap to open)", CYAN)
-        self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
-        self.proj_list.bind(minimum_height=self.proj_list.setter("height"))
-        c.add_widget(self.proj_list)
-
-        self._head(c, "SELECTED PROJECT", GREEN)
-        self.proj_title = autosize(Label(text="None selected.", color=TXT, bold=True))
-        c.add_widget(self.proj_title)
-        self.proj_status = autosize(Label(text="", color=GREEN))
-        c.add_widget(self.proj_status)
-
-        self._head(c, "PROJECT LOG", AMBER)
-        self.proj_log = autosize(Label(text="", color=TXT))
-        c.add_widget(self.proj_log)
-        self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
-        c.add_widget(self.proj_note)
-        try:  # PROJ_LAYOUT_V68
-            for _x in self._v68_ctl():
-                c.add_widget(_x)
-        except Exception as e:
-            self.err("v68 ctl", e)
-            self._v68_old_ctl(c)
+            self.err("v69 page", e)
+            try:
+                c.clear_widgets()
+            except Exception:
+                pass
+            self._v69_old_page(c)
         self.refresh_projects()
         Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
+        if _v69_bar is not None:
+            try:
+                _v69_box = BoxLayout(orientation="vertical")
+                _v69_box.add_widget(sv)
+                try:
+                    _v69_box.add_widget(_v69_bar)
+                except Exception:
+                    _v69_box.remove_widget(sv)
+                    raise
+                return _v69_box
+            except Exception as e:
+                self.err("v69 box", e)
         return sv
 
     def _v68_old_create(self, c):
@@ -1708,6 +1696,117 @@ class BusinessDashboard(App):
             ("TIDY WITH GEMMA", self.proj_tidy, MAGENTA)], CYAN)
         out += self._v68_fold("MORE", [("DELETE PROJECT (tap twice)", self.proj_delete, AMBER)], AMBER)
         return out
+
+    def _v69_page(self, c):
+        self.proj_name = mk_input("Project name")
+        self.proj_goal = mk_input("Goal: what should it build or do?", multiline=True, height=100)
+        nb = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=0, opacity=0)
+        nb.disabled = True
+        nb.add_widget(self.proj_name)
+        nb.add_widget(self.proj_goal)
+        nb.add_widget(self._v68_row([("SPEAK", self.speak_project, GREEN),
+                                     ("CREATE", self.new_project, MAGENTA),
+                                     ("CREATE+RUN", self.create_run, GREEN)]))
+        top = self._v68_btn("+ NEW PROJECT", lambda *a: None, MAGENTA)
+        top.size_hint_y = None
+        top.height = 48
+        def tog(*a):
+            o = nb.height == 0
+            if o:
+                nb.height = sum(w.height for w in nb.children) + 6 * (len(nb.children) - 1)
+            else:
+                nb.height = 0
+            nb.opacity = 1 if o else 0
+            nb.disabled = not o
+        top.bind(on_release=tog)
+        c.add_widget(top)
+        c.add_widget(nb)
+        self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
+        self.proj_list.bind(minimum_height=self.proj_list.setter("height"))
+        c.add_widget(self.proj_list)
+        self.proj_title = autosize(Label(text="None selected.", color=TXT, bold=True))
+        c.add_widget(self.proj_title)
+        self.proj_status = autosize(Label(text="", color=GREEN))
+        c.add_widget(self.proj_status)
+        self.proj_log = autosize(Label(text="", color=TXT))
+        c.add_widget(self.proj_log)
+        self.proj_note = mk_input("Message this project", multiline=True, height=56)
+        mic = NeonButton(glow=GREEN, text="MIC", size_hint_x=None, width=64, font_size="12sp")
+        mic.bind(on_release=self.speak_note)
+        snd = NeonButton(glow=CYAN, text="SEND", size_hint_x=None, width=80, font_size="12sp")
+        snd.bind(on_release=self.add_note)
+        r1 = BoxLayout(orientation="horizontal", spacing=6, size_hint_y=None, height=56)
+        r1.add_widget(self.proj_note)
+        r1.add_widget(mic)
+        r1.add_widget(snd)
+        r2 = self._v68_row([("RUN", self.auto_start, GREEN),
+                            ("PAUSE", lambda *a: self.auto_stop("Paused."), AMBER),
+                            ("CLAUDE", lambda *a: self.proj_to_app("claude"), CYAN),
+                            ("MENU", self._v69_menu, MAGENTA)])
+        bar = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=124, padding=[0, 6, 0, 0])
+        bar.add_widget(r1)
+        bar.add_widget(r2)
+        return bar
+
+    def _v69_menu(self, *a):
+        from kivy.uix.modalview import ModalView
+        items = [("DONE (mark finished)", self.mark_done, MAGENTA),
+                 ("SAVE TO MEMORY", self.proj_mem, AMBER),
+                 ("SHARE (any app)", self.proj_share2, CYAN),
+                 ("SEND TO CHATGPT", lambda *x: self.proj_to_app("chatgpt"), GREEN),
+                 ("SAVE PDF", self.proj_pdf, GREEN),
+                 ("SAVE TEXT", self.proj_txt, GREEN),
+                 ("COPY RESULT", self.proj_copy, CYAN),
+                 ("TIDY WITH GEMMA", self.proj_tidy, MAGENTA),
+                 ("DELETE (tap twice)", self.proj_delete, AMBER)]
+        n = len(items)
+        mv = ModalView(size_hint=(0.92, None), height=n * 56 + (n - 1) * 6 + 16)
+        box = BoxLayout(orientation="vertical", spacing=6, padding=8)
+        for t, cb, g in items:
+            def go(inst, cb=cb, keep=t.startswith("DELETE")):
+                if not keep:
+                    mv.dismiss()
+                cb(inst)
+            bt = self._v68_btn(t, go, g)
+            box.add_widget(bt)
+        mv.add_widget(box)
+        mv.open()
+
+    def _v69_old_page(self, c):
+        self._head(c, "NEW PROJECT", MAGENTA)
+        self.proj_name = mk_input("Project name (business, game, workout...)")
+        c.add_widget(self.proj_name)
+        self.proj_goal = mk_input("Goal: what should it build or do?", multiline=True, height=100)
+        c.add_widget(self.proj_goal)
+        try:
+            for _x in self._v68_create():
+                c.add_widget(_x)
+        except Exception as e:
+            self.err("v68 create", e)
+            self._v68_old_create(c)
+
+        self._head(c, "YOUR PROJECTS (tap to open)", CYAN)
+        self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
+        self.proj_list.bind(minimum_height=self.proj_list.setter("height"))
+        c.add_widget(self.proj_list)
+
+        self._head(c, "SELECTED PROJECT", GREEN)
+        self.proj_title = autosize(Label(text="None selected.", color=TXT, bold=True))
+        c.add_widget(self.proj_title)
+        self.proj_status = autosize(Label(text="", color=GREEN))
+        c.add_widget(self.proj_status)
+
+        self._head(c, "PROJECT LOG", AMBER)
+        self.proj_log = autosize(Label(text="", color=TXT))
+        c.add_widget(self.proj_log)
+        self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
+        c.add_widget(self.proj_note)
+        try:  # PROJ_LAYOUT_V68
+            for _x in self._v68_ctl():
+                c.add_widget(_x)
+        except Exception as e:
+            self.err("v68 ctl", e)
+            self._v68_old_ctl(c)
 
     def _proj_export(self):
         if self.cur_proj is None:
