@@ -1709,7 +1709,8 @@ class BusinessDashboard(App):
                                      ("CREATE+RUN", self.create_run, GREEN)]))
         top = self._v68_btn("+ NEW PROJECT", lambda *a: None, MAGENTA)
         top.size_hint_y = None
-        top.height = 48
+        top.height = 72  # BIGBTN_V71
+        top.font_size = "18sp"
         def tog(*a):
             o = nb.height == 0
             if o:
@@ -1724,6 +1725,8 @@ class BusinessDashboard(App):
         self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
         self.proj_list.bind(minimum_height=self.proj_list.setter("height"))
         c.add_widget(self.proj_list)
+        self.proj_list.bind(children=lambda *a: Clock.schedule_once(self._v71_big, 0))
+        Clock.schedule_once(self._v71_big, 0.3)
         self.proj_title = autosize(Label(text="None selected.", color=TXT, bold=True))
         c.add_widget(self.proj_title)
         self.proj_status = autosize(Label(text="", color=GREEN))
@@ -1747,6 +1750,18 @@ class BusinessDashboard(App):
         bar.add_widget(r1)
         bar.add_widget(r2)
         return bar
+
+    def _v71_big(self, *a):
+        try:
+            for w in list(self.proj_list.children):
+                w.size_hint_y = None
+                w.height = 68
+                try:
+                    w.font_size = "18sp"
+                except Exception:
+                    pass
+        except Exception as e:
+            self.err("v71 big", e)
 
     def _v69_menu(self, *a):
         from kivy.uix.modalview import ModalView
