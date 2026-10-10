@@ -728,6 +728,11 @@ class Database:
         return self.conn.execute(
             "SELECT id, name, goal, status FROM projects WHERE id=?", (pid,)).fetchone()
 
+    def delete_project(self, pid):
+        self.conn.execute("DELETE FROM project_log WHERE project_id=?", (pid,))
+        self.conn.execute("DELETE FROM projects WHERE id=?", (pid,))
+        self.conn.commit()
+
     def set_pstatus(self, pid, status):
         self.conn.execute("UPDATE projects SET status=? WHERE id=?", (status, pid))
         self.conn.commit()
@@ -1494,6 +1499,7 @@ class BusinessDashboard(App):
         self._btn(c, "START AUTO RUN", self.auto_start, GREEN, 56)
         self._btn(c, "PAUSE", lambda *a: self.auto_stop("Paused."), AMBER)
         self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
+        self._btn(c, "DELETE PROJECT (tap twice)", self.proj_delete, AMBER)
         self._head(c, "WHAT TO DO WITH THE RESULT", GREEN)
         self._btn(c, "SHARE RESULT (Claude, ChatGPT, Grok, Gemini...)", self.proj_share, CYAN, 56)
         self._btn(c, "SAVE PDF", self.proj_pdf, GREEN)
@@ -1548,6 +1554,26 @@ class BusinessDashboard(App):
             self.err("copy result", e)
 
     def _save_bytes(self, name, data):
+        try:
+            from jnius import autoclass
+            PA = autoclass("org.kivy.android.PythonActivity")
+            CV = autoclass("android.content.ContentValues")
+            MS = autoclass("android.provider.MediaStore$Downloads")
+            cr = PA.mActivity.getContentResolver()
+            cv = CV()
+            cv.put("_display_name", name)
+            cv.put("mime_type", "application/pdf" if name.endswith(".pdf") else "text/plain")
+            cv.put("relative_path", "Download")
+            uri = cr.insert(MS.EXTERNAL_CONTENT_URI, cv)
+            o = cr.openOutputStream(uri)
+            o.write(bytearray(data))
+            o.close()
+            return "Download/" + name
+        except Exception as e:
+            self.err("mediastore", e)
+            return self._save_bytes_old(name, data)
+
+    def _save_bytes_old(self, name, data):
         for d in ("/storage/emulated/0/Download", self.user_data_dir):
             try:
                 path = os.path.join(d, name)
@@ -1639,6 +1665,24 @@ class BusinessDashboard(App):
             Clock.schedule_once(lambda dt: self.flash("Summary ready. Share or save it now"), 0)
         except Exception as e:
             Clock.schedule_once(lambda dt: self.flash("Tidy failed. Is the Gemma server running?"), 0)
+
+    def proj_delete(self, *a):
+        import time as _t
+        if self.cur_proj is None:
+            self.flash("Open a project first")
+            return
+        if _t.time() - getattr(self, "_del_t", 0) > 5:
+            self._del_t = _t.time()
+            self.flash("Tap DELETE PROJECT again to confirm")
+            return
+        self.db.delete_project(self.cur_proj)
+        self.cur_proj = None
+        self.auto_on = False
+        self.proj_title.text = "None selected."
+        self.proj_status.text = ""
+        self.proj_log.text = ""
+        self.refresh_projects()
+        self.flash("Project deleted")
 
     def refresh_projects(self):
         self.proj_list.clear_widgets()
@@ -4642,10 +4686,10 @@ class BusinessDashboard(App):
                 self._ask_cloud(text)
                 return
             msgs = []
-            for role, t in self.hist[-4:]:
+            for role, t in self.hist[-2:]:
                 if not msgs and role != "user":
                     continue
-                msgs.append({"role": "assistant" if role == "model" else "user", "content": t[:400]})
+                msgs.append({"role": "assistant" if role == "model" else "user", "content": t[:200]})
             if not msgs or msgs[-1]["role"] != "user":
                 msgs.append({"role": "user", "content": text})
             merged = []
@@ -4673,7 +4717,7 @@ class BusinessDashboard(App):
         try:
             import urllib.request
             sp = ("You are RAMBO AI, a smart, friendly assistant on the user's Android phone. "
-                  "Answer clearly and accurately in two to five practical sentences. "
+                  "Answer in one to three short sentences. "
                   "If you are not sure, say so instead of guessing. For safety topics put the warning first. ")
             if facts:
                 sp += "Known facts about the user: " + "; ".join(facts) + ". "
@@ -4688,7 +4732,7 @@ class BusinessDashboard(App):
             except Exception:
                 pass
             sysm = {"role": "system", "content": sp}
-            body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 400,
+            body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 250,
                                     "chat_template_kwargs": {"enable_thinking": False}}).encode()
             bd = json.loads(body.decode())
             bd["stream"] = True
