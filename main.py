@@ -2589,10 +2589,18 @@ class BusinessDashboard(App):
             i.setClassName("com.termux", "com.termux.app.RunCommandService")
             i.setAction("com.termux.RUN_COMMAND")
             i.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash")
-            i.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", ["-c", "( " + cmd + " ) 2>&1 | curl -s -m 20 --data-binary @- http://127.0.0.1:%d/o" % port])
+            _JS = autoclass("java.lang.String")  # V73_DIAG
+            _AR = autoclass("java.lang.reflect.Array")
+            _line = ("( " + cmd + " ) > $HOME/.rambo_out.txt 2>&1; echo \"$(date) exit=$?\" >> $HOME/rambo_term.log; "
+                     "curl -s -m 20 --data-binary @$HOME/.rambo_out.txt http://127.0.0.1:%d/o" % port)
+            _arr = _AR.newInstance(_JS, 2)
+            _AR.set(_arr, 0, _JS("-c"))
+            _AR.set(_arr, 1, _JS(_line))
+            i.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", _arr)
             i.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home/BusinessDashboard")
             i.putExtra("com.termux.RUN_COMMAND_BACKGROUND", True)
-            act.startService(i)
+            _cn = act.startService(i)
+            self._v73_diag = "startService component=" + str(_cn) + " port=" + str(port) + " cmd=" + cmd[:60]
         except Exception as e:
             srv.server_close()
             return "TERMUX START FAILED: " + str(e)[:200]
@@ -2601,7 +2609,8 @@ class BusinessDashboard(App):
             srv.handle_request()
         srv.server_close()
         if box["out"] is None:
-            return "TIMEOUT: no output. Check the Termux permission for RAMBO AI and allow-external-apps."
+            return ("TIMEOUT: Termux did not call back. In Termux run: cat ~/rambo_term.log  "
+                    "(a new line means the command ran). Then type: logs  and  termuxperm")
         return box["out"].strip()[-1500:] or "(no output)"
 
     def _v72_bg(self, cmd, pid=None):
@@ -2686,6 +2695,38 @@ class BusinessDashboard(App):
             self.db.add_plog(pid, "run", "SCREEN Claude reply: " + reply.strip()[:2500])
         else:
             self.db.add_plog(pid, "run", "SCREEN Claude did not finish in time or Send was not found. Tap Send in Claude yourself, or answer in the note box.")
+
+    def _v73_logs(self):
+        try:
+            rows = self.db.errors(10)
+        except Exception as e:
+            rows = "could not read: " + str(e)[:100]
+        d = getattr(self, "_v73_diag", "no Termux run yet this session")
+        self.reply("LAST TERMUX RUN: " + d + "\nAPP ERRORS:\n" + str(rows)[:1400])
+
+    def _v73_perm(self):
+        P = "com.termux.permission.RUN_COMMAND"
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            pi = act.getPackageManager().getPackageInfo(act.getPackageName(), 4096)
+            rp = [str(x) for x in (pi.requestedPermissions or [])]
+            declared = P in rp
+            granted = act.checkSelfPermission(P) == 0
+            msg = ("package " + str(act.getPackageName()) + "; declared in this APK: " + str(declared)
+                   + "; granted: " + str(granted))
+            if declared and not granted:
+                JS = autoclass("java.lang.String")
+                AR = autoclass("java.lang.reflect.Array")
+                arr = AR.newInstance(JS, 1)
+                AR.set(arr, 0, JS(P))
+                act.requestPermissions(arr, 73)
+                msg += ". Asked Android for it. Tap Allow if a prompt appears, then try: termux ls"
+            elif not declared:
+                msg += ". This APK does not contain the permission, so the build must be redone."
+            self.reply(msg)
+        except Exception as e:
+            self.reply("termuxperm failed: " + str(e)[:200])
 
     def _v72_newproj(self, *a):
         from kivy.uix.modalview import ModalView
@@ -5066,6 +5107,12 @@ class BusinessDashboard(App):
             return
         if low.startswith("termux "):
             self._v72_chat_cmd(text[7:].strip())
+            return
+        if re.match(r"^(error logs?|show (the )?(errors?|logs?)|logs?|errors?)$", low):
+            self._v73_logs()
+            return
+        if low in ("termuxperm", "termux perm", "termux status"):
+            self._v73_perm()
             return
         if low in ("save", "save this", "save to memory"):  # ASK_FIRST_V63
             self.save_last_mem()
