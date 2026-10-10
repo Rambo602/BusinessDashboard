@@ -5047,8 +5047,11 @@ class BusinessDashboard(App):
                         if shown:
                             Clock.schedule_once(lambda dt, tt=shown: self._stream_show(tt), 0)
             out = acc.strip()
-            if out.upper().startswith("ESCALATE") and self.gem_ok():
-                Clock.schedule_once(lambda dt: (self._stream_clear(), self._ask_cloud(text)), 0)
+            if out.upper().startswith("ESCALATE"):  # ESCALATE_CLAUDE
+                if self.gem_ok():
+                    Clock.schedule_once(lambda dt: (self._stream_clear(), self._ask_cloud(text)), 0)
+                else:
+                    Clock.schedule_once(lambda dt: (self._stream_clear(), self.reply(self.rb_send("claude", text))), 0)
                 return
             out = re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
         except Exception as e:
