@@ -1212,7 +1212,7 @@ class BusinessDashboard(App):
             if not last:
                 self.flash("Nothing to save yet")
                 return
-            self.add_memory(last[-1][:6000])
+            self.db.add_memory(last[-1][:6000])
             self.flash("Saved to memory")
         except Exception as e:
             self.err("save mem", e)
