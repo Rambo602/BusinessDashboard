@@ -2564,7 +2564,29 @@ class BusinessDashboard(App):
         except Exception:
             pass
 
-    def _v72_run_termux(self, cmd, wait=60):
+    def _v72_run_termux(self, cmd, wait=60):  # V74_HTTP_EXEC
+        tok = ""
+        try:
+            tp = os.path.join(self.user_data_dir, "exec.token")
+            if os.path.exists(tp):
+                tok = open(tp).read().strip()
+        except Exception:
+            tok = ""
+        if not tok:
+            return "No token yet. In Termux run: cat ~/.rambo_exec_token  then type here: setexec TOKEN"
+        try:
+            rq = urllib.request.Request("http://127.0.0.1:8765/run", data=cmd.encode("utf-8"),
+                                        headers={"X-Token": tok}, method="POST")
+            with urllib.request.urlopen(rq, timeout=wait + 10) as r:
+                out = r.read().decode("utf-8", "replace")
+            self._v73_diag = "http exec ok: " + cmd[:60]
+            return out.strip()[-1500:] or "(no output)"
+        except Exception as e:
+            self._v73_diag = "http exec failed: " + str(e)[:120]
+            return ("Exec server not reachable (" + str(e)[:80] + "). In Termux run: "
+                    "nohup python ~/rambo_exec.py > ~/rambo_exec.log 2>&1 &")
+
+    def _v72_run_termux_old(self, cmd, wait=60):
         from http.server import BaseHTTPRequestHandler, HTTPServer
         box = {"out": None}
         class H(BaseHTTPRequestHandler):
@@ -5110,6 +5132,18 @@ class BusinessDashboard(App):
             return
         if re.match(r"^(error logs?|show (the )?(errors?|logs?)|logs?|errors?)$", low):
             self._v73_logs()
+            return
+        if low.startswith("setexec "):
+            try:
+                _t = text.split(None, 1)[1].strip()
+                with open(os.path.join(self.user_data_dir, "exec.token"), "w") as _f:
+                    _f.write(_t)
+                self.reply("Token saved. Now type: execstatus")
+            except Exception as e:
+                self.reply("Could not save the token: " + str(e)[:100])
+            return
+        if low == "execstatus":
+            self._v72_bg("pwd && echo exec server ok")
             return
         if low in ("termuxperm", "termux perm", "termux status"):
             self._v73_perm()
