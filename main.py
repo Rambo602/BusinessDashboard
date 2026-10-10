@@ -1206,17 +1206,35 @@ class BusinessDashboard(App):
         except Exception:
             pass
 
-    def save_last_mem(self, *a):
+    def save_last_mem(self, *a):  # SAVE_VISIBLE_V66
+        def say(m):
+            try:
+                self.add_msg(m, False)
+            except Exception:
+                pass
+            try:
+                self.flash(m)
+            except Exception:
+                pass
         try:
             last = [t for r, t in self.hist if r == "model"]
-            if not last:
-                self.flash("Nothing to save yet")
+            txt = last[-1] if last else ""
+            if not txt.strip():
+                try:
+                    from kivy.core.clipboard import Clipboard
+                    txt = Clipboard.paste() or ""
+                except Exception:
+                    txt = ""
+            txt = txt.strip()[:6000]
+            if not txt:
+                say("SAVE: nothing to save yet.")
                 return
-            self.db.add_memory(last[-1][:6000])
-            self.flash("Saved to memory")
+            self.db.add_memory(txt)
+            n = len(self.db.memories(1000))
+            say("SAVED to memory (%d characters). Memory now holds %d entries." % (len(txt), n))
         except Exception as e:
             self.err("save mem", e)
-            self.flash("Save failed")
+            say("SAVE FAILED: " + str(e)[:150])
 
     def new_chat(self):
         try:
