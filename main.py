@@ -193,9 +193,7 @@ def needs_live(goal):
 def pick_first(goal):
     # which model should try a project's steps first
     low = (goal or "").lower()
-    if low.startswith("gemini:") or needs_live(low) or len(low) > 400:
-        return "gemini"
-    if any(w in low for w in HEAVY_WORDS):
+    if low.startswith("gemini:") or needs_live(low):
         return "gemini"
     return "gemma"
 
@@ -4125,7 +4123,12 @@ class BusinessDashboard(App):
                 i = Intent(AlarmClock.ACTION_SET_TIMER)
                 i.putExtra(AlarmClock.EXTRA_LENGTH, secs)
                 i.putExtra(AlarmClock.EXTRA_SKIP_UI, True)
-                act.startActivity(i)
+                try:
+                    act.startActivity(i)
+                except Exception:
+                    i2 = Intent(AlarmClock.ACTION_SET_TIMER)
+                    i2.putExtra(AlarmClock.EXTRA_LENGTH, secs)
+                    act.startActivity(i2)
                 return "timer set " + arg + " min"
             if verb == "alarm":
                 h, m = arg.split(":")
@@ -4492,7 +4495,7 @@ class BusinessDashboard(App):
             if qc:
                 self.reply(qc)
                 return
-            hard = low.startswith("gemini") or len(text) > 700
+            hard = low.startswith("gemini") or len(text) > 1500
             if hard or not self.cfg.get("local", True):
                 self._ask_cloud(text)
                 return
@@ -4534,10 +4537,10 @@ class BusinessDashboard(App):
                 sp += "Known facts about the user: " + "; ".join(facts) + ". "
             if notes:
                 sp += ("Saved reference notes you wrote earlier. Use them when relevant and do not contradict them: "
-                       + " || ".join(notes) + " ")
+                       + " || ".join(n[:300] for n in list(notes)[:2]) + " ")
             try:
                 import gemmaboost as GB
-                kbt = GB.kb_block(GB.kb_sections(self.user_data_dir), text, 2, 600)
+                kbt = GB.kb_block(GB.kb_sections(self.user_data_dir), text, 1, 300)
                 if kbt:
                     sp += " " + kbt
             except Exception:
