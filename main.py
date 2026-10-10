@@ -1113,6 +1113,9 @@ class BusinessDashboard(App):
                           font_size="12sp")
         newb.bind(on_press=lambda *a: self.new_chat())
         cpb = NeonButton(glow=GREEN, text="COPY", size_hint_x=0.22, font_size="12sp")
+        svb = NeonButton(glow=AMBER, text="SAVE", size_hint_x=0.2, font_size="12sp")
+        svb.bind(on_release=lambda *a: self.save_last_mem())
+        Clock.schedule_once(lambda dt: cpb.parent.add_widget(svb) if cpb.parent else None, 0.5)
         cpb.bind(on_press=lambda *a: self.copy_chat())
         top.add_widget(cpb)
         top.add_widget(newb)
@@ -1202,6 +1205,18 @@ class BusinessDashboard(App):
                 self.chips_row.parent.remove_widget(self.chips_row)
         except Exception:
             pass
+
+    def save_last_mem(self, *a):
+        try:
+            last = [t for r, t in self.hist if r == "model"]
+            if not last:
+                self.flash("Nothing to save yet")
+                return
+            self.add_memory(last[-1][:6000])
+            self.flash("Saved to memory")
+        except Exception as e:
+            self.err("save mem", e)
+            self.flash("Save failed")
 
     def new_chat(self):
         try:
@@ -4660,6 +4675,17 @@ class BusinessDashboard(App):
             self.reply("Okay.")
             return
 
+        if low in ("save", "save this", "save to memory"):  # ASK_FIRST_V63
+            self.save_last_mem()
+            return
+        try:
+            r_rb = self._rb_cmd(text)
+        except Exception as e:
+            self.err("ask first v63", e)
+            r_rb = "Could not open the app: " + str(e)[:150]
+        if r_rb is not None:
+            self.reply(r_rb)
+            return
         force_ai = False
         if low.startswith(("ask ", "do ")):
             text = text.split(" ", 1)[1].strip()
