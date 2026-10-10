@@ -1217,8 +1217,12 @@ class BusinessDashboard(App):
             except Exception:
                 pass
         try:
-            last = [t for r, t in self.hist if r == "model"]
+            last = [t for r, t in self.hist if r == "model"]  # SAVE_REAL_V67
             txt = last[-1] if last else ""
+            if txt.startswith(("Sent to", "SAVED", "SAVE")):
+                txt = ""
+            elif " replied:\n" in txt[:40]:
+                txt = txt.split("\n", 1)[1]
             if not txt.strip():
                 try:
                     from kivy.core.clipboard import Clipboard
@@ -1597,9 +1601,12 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_name)
         self.proj_goal = mk_input("Goal: what should it build or do?", multiline=True, height=100)
         c.add_widget(self.proj_goal)
-        self._btn(c, "SPEAK PROJECT (name + goal)", self.speak_project, GREEN, 56)
-        self._btn(c, "CREATE PROJECT", self.new_project, MAGENTA)
-        self._btn(c, "CREATE AND AUTO RUN", self.create_run, GREEN)
+        try:
+            for _x in self._v68_create():
+                c.add_widget(_x)
+        except Exception as e:
+            self.err("v68 create", e)
+            self._v68_old_create(c)
 
         self._head(c, "YOUR PROJECTS (tap to open)", CYAN)
         self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
@@ -1617,6 +1624,22 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_log)
         self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
         c.add_widget(self.proj_note)
+        try:  # PROJ_LAYOUT_V68
+            for _x in self._v68_ctl():
+                c.add_widget(_x)
+        except Exception as e:
+            self.err("v68 ctl", e)
+            self._v68_old_ctl(c)
+        self.refresh_projects()
+        Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
+        return sv
+
+    def _v68_old_create(self, c):
+        self._btn(c, "SPEAK PROJECT (name + goal)", self.speak_project, GREEN, 56)
+        self._btn(c, "CREATE PROJECT", self.new_project, MAGENTA)
+        self._btn(c, "CREATE AND AUTO RUN", self.create_run, GREEN)
+
+    def _v68_old_ctl(self, c):
         self._btn(c, "SEND ANSWER", self.add_note, CYAN, 56)
         self._btn(c, "SPEAK ANSWER (MIC)", self.speak_note, GREEN)
         self._btn(c, "START AUTO RUN", self.auto_start, GREEN, 56)
@@ -1632,9 +1655,59 @@ class BusinessDashboard(App):
         self._btn(c, "COPY RESULT", self.proj_copy, CYAN)
         self._btn(c, "SAVE TO MEMORY", self.proj_mem, AMBER)
         self._btn(c, "TIDY WITH GEMMA (clean summary)", self.proj_tidy, MAGENTA, 56)
-        self.refresh_projects()
-        Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
-        return sv
+
+    def _v68_btn(self, t, cb, g):
+        bt = NeonButton(glow=g, text=t, font_size="14sp")
+        bt.bind(on_release=cb)
+        return bt
+
+    def _v68_row(self, items):
+        r = BoxLayout(orientation="horizontal", spacing=6, size_hint_y=None, height=56)
+        for t, cb, g in items:
+            r.add_widget(self._v68_btn(t, cb, g))
+        return r
+
+    def _v68_fold(self, label, items, glow):
+        n = len(items)
+        full = n * 56 + (n - 1) * 6
+        box = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=0, opacity=0)
+        box.disabled = True
+        for t, cb, g in items:
+            b = self._v68_btn(t, cb, g)
+            b.size_hint_y = None
+            b.height = 56
+            box.add_widget(b)
+        top = self._v68_btn(label + "  (tap to open)", None, glow)
+        top.size_hint_y = None
+        top.height = 56
+        def tog(*a):
+            o = box.height == 0
+            box.height = full if o else 0
+            box.opacity = 1 if o else 0
+            box.disabled = not o
+        top.bind(on_release=tog)
+        return [top, box]
+
+    def _v68_create(self):
+        return [self._v68_row([("SPEAK", self.speak_project, GREEN),
+                               ("CREATE", self.new_project, MAGENTA),
+                               ("CREATE+RUN", self.create_run, GREEN)])]
+
+    def _v68_ctl(self):
+        out = [self._v68_row([("SEND", self.add_note, CYAN), ("MIC", self.speak_note, GREEN)]),
+               self._v68_row([("RUN", self.auto_start, GREEN),
+                              ("PAUSE", lambda *a: self.auto_stop("Paused."), AMBER),
+                              ("DONE", self.mark_done, MAGENTA)]),
+               self._v68_row([("CLAUDE", lambda *a: self.proj_to_app("claude"), CYAN),
+                              ("SAVE MEM", self.proj_mem, AMBER)])]
+        out += self._v68_fold("RESULT MENU", [
+            ("SHARE (any app)", self.proj_share2, CYAN),
+            ("SEND TO CHATGPT", lambda *a: self.proj_to_app("chatgpt"), GREEN),
+            ("SAVE PDF", self.proj_pdf, GREEN), ("SAVE TEXT", self.proj_txt, GREEN),
+            ("COPY RESULT", self.proj_copy, CYAN),
+            ("TIDY WITH GEMMA", self.proj_tidy, MAGENTA)], CYAN)
+        out += self._v68_fold("MORE", [("DELETE PROJECT (tap twice)", self.proj_delete, AMBER)], AMBER)
+        return out
 
     def _proj_export(self):
         if self.cur_proj is None:
