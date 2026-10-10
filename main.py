@@ -1579,9 +1579,8 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_name)
         self.proj_goal = mk_input("Goal: what should it build or do?", multiline=True, height=100)
         c.add_widget(self.proj_goal)
-        self._btn(c, "SPEAK PROJECT (name + goal)", self.speak_project, GREEN, 56)
-        self._btn(c, "CREATE PROJECT", self.new_project, MAGENTA)
-        self._btn(c, "CREATE AND AUTO RUN", self.create_run, GREEN)
+        self._row(c, [("SPEAK", self.speak_project, GREEN), ("CREATE", self.new_project, MAGENTA),
+                      ("CREATE+RUN", self.create_run, GREEN)])  # PROJ_LAYOUT_V65
 
         self._head(c, "YOUR PROJECTS (tap to open)", CYAN)
         self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
@@ -1599,24 +1598,48 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_log)
         self.proj_note = mk_input("Add a note, or answer its question", multiline=True, height=90)
         c.add_widget(self.proj_note)
-        self._btn(c, "SEND ANSWER", self.add_note, CYAN, 56)
-        self._btn(c, "SPEAK ANSWER (MIC)", self.speak_note, GREEN)
-        self._btn(c, "START AUTO RUN", self.auto_start, GREEN, 56)
-        self._btn(c, "PAUSE", lambda *a: self.auto_stop("Paused."), AMBER)
-        self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
-        self._btn(c, "DELETE PROJECT (tap twice)", self.proj_delete, AMBER)
-        self._head(c, "WHAT TO DO WITH THE RESULT", GREEN)
-        self._btn(c, "SHARE RESULT (Claude, ChatGPT, Grok, Gemini...)", self.proj_share2, CYAN, 56)
-        self._btn(c, "SEND TO CLAUDE (brings the reply back)", lambda *a: self.proj_to_app("claude"), CYAN, 56)
-        self._btn(c, "SEND TO CHATGPT", lambda *a: self.proj_to_app("chatgpt"), GREEN)
-        self._btn(c, "SAVE PDF", self.proj_pdf, GREEN)
-        self._btn(c, "SAVE TEXT", self.proj_txt, GREEN)
-        self._btn(c, "COPY RESULT", self.proj_copy, CYAN)
-        self._btn(c, "SAVE TO MEMORY", self.proj_mem, AMBER)
-        self._btn(c, "TIDY WITH GEMMA (clean summary)", self.proj_tidy, MAGENTA, 56)
+        self._row(c, [("SEND", self.add_note, CYAN), ("MIC", self.speak_note, GREEN)])
+        self._row(c, [("RUN", self.auto_start, GREEN), ("PAUSE", lambda *a: self.auto_stop("Paused."), AMBER),
+                      ("DONE", self.mark_done, MAGENTA)])
+        self._row(c, [("CLAUDE", lambda *a: self.proj_to_app("claude"), CYAN),
+                      ("SAVE MEM", self.proj_mem, AMBER)])
+        self._fold(c, "RESULT MENU", [
+            ("SHARE (any app)", self.proj_share2, CYAN),
+            ("SEND TO CHATGPT", lambda *a: self.proj_to_app("chatgpt"), GREEN),
+            ("SAVE PDF", self.proj_pdf, GREEN), ("SAVE TEXT", self.proj_txt, GREEN),
+            ("COPY RESULT", self.proj_copy, CYAN),
+            ("TIDY WITH GEMMA", self.proj_tidy, MAGENTA)], CYAN)
+        self._fold(c, "MORE", [("DELETE PROJECT (tap twice)", self.proj_delete, AMBER)], AMBER)
         self.refresh_projects()
         Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
         return sv
+
+    def _row(self, parent, items):
+        r = BoxLayout(orientation="horizontal", spacing=6, size_hint_y=None, height=56)
+        for t, cb, g in items:
+            bt = NeonButton(glow=g, text=t, font_size="14sp")
+            bt.bind(on_release=cb)
+            r.add_widget(bt)
+        parent.add_widget(r)
+
+    def _fold(self, parent, label, items, glow):
+        n = len(items)
+        full = n * 56 + (n - 1) * 6
+        box = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=0, opacity=0)
+        box.disabled = True
+        for t, cb, g in items:
+            bt = NeonButton(glow=g, text=t, size_hint_y=None, height=56, font_size="14sp")
+            bt.bind(on_release=cb)
+            box.add_widget(bt)
+        top = NeonButton(glow=glow, text=label + "  (tap to open)", size_hint_y=None, height=56, font_size="14sp")
+        def tog(*a):
+            o = box.height == 0
+            box.height = full if o else 0
+            box.opacity = 1 if o else 0
+            box.disabled = not o
+        top.bind(on_release=tog)
+        parent.add_widget(top)
+        parent.add_widget(box)
 
     def _proj_export(self):
         if self.cur_proj is None:
