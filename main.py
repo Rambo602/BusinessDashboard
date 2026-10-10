@@ -4773,6 +4773,13 @@ class BusinessDashboard(App):
         return ("Unknown acc command. Say: acc help", None)
 
     def local_route(self, text, low):
+        try:  # ASK_FIRST_V62
+            r_first = self._rb_cmd(text)
+        except Exception as e:
+            self.err('ask first', e)
+            r_first = 'Could not open the app: ' + str(e)[:150]
+        if r_first is not None:
+            return r_first
         try:
             self._auto_learn(text, low)
         except Exception as e:
