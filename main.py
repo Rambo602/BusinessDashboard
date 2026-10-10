@@ -288,9 +288,16 @@ def autosize(lbl):
 
 from kivy.metrics import dp as _dp
 
+try:
+    import ssl as _ssl, certifi as _certifi
+    os.environ["SSL_CERT_FILE"] = _certifi.where()
+    _ssl._create_default_https_context = lambda *a, **k: _ssl.create_default_context(cafile=_certifi.where())
+except Exception:
+    pass
+
 
 def mk_input(hint, multiline=False, height=45, **kw):
-    return TextInput(input_type="text", keyboard_suggestions=(not multiline),
+    return TextInput(input_type="text", keyboard_suggestions=True,
                      hint_text=hint, multiline=multiline,
                      size_hint_y=None, height=_dp(height), **style_in(kw))
 
@@ -1501,7 +1508,7 @@ class BusinessDashboard(App):
         self._btn(c, "MARK DONE", self.mark_done, MAGENTA)
         self._btn(c, "DELETE PROJECT (tap twice)", self.proj_delete, AMBER)
         self._head(c, "WHAT TO DO WITH THE RESULT", GREEN)
-        self._btn(c, "SHARE RESULT (Claude, ChatGPT, Grok, Gemini...)", self.proj_share, CYAN, 56)
+        self._btn(c, "SHARE RESULT (Claude, ChatGPT, Grok, Gemini...)", self.proj_share2, CYAN, 56)
         self._btn(c, "SAVE PDF", self.proj_pdf, GREEN)
         self._btn(c, "SAVE TEXT", self.proj_txt, GREEN)
         self._btn(c, "COPY RESULT", self.proj_copy, CYAN)
@@ -1541,6 +1548,29 @@ class BusinessDashboard(App):
         except Exception as e:
             self.err("share", e)
             self.flash("Share failed")
+
+    def proj_share2(self, *a):
+        try:
+            title, text = self._proj_export()
+            if not text:
+                return
+            from jnius import autoclass, cast
+            Intent = autoclass("android.content.Intent")
+            JString = autoclass("java.lang.String")
+            PA = autoclass("org.kivy.android.PythonActivity")
+            i = Intent()
+            i.setAction(Intent.ACTION_SEND)
+            i.setType("text/plain")
+            i.putExtra(Intent.EXTRA_SUBJECT, JString(title))
+            i.putExtra(Intent.EXTRA_TEXT, JString((title + "\n\n" + text)[:90000]))
+            try:
+                ch = Intent.createChooser(i, cast("java.lang.CharSequence", JString("Send to")))
+            except Exception:
+                ch = i
+            PA.mActivity.startActivity(ch)
+        except Exception as e:
+            self.err("share", e)
+            self.flash("Share failed: " + str(e)[:90])
 
     def proj_copy(self, *a):
         try:
