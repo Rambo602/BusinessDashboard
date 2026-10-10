@@ -4745,6 +4745,21 @@ class BusinessDashboard(App):
             return self.pa("text " + m.group(1) + " " + m.group(2))
         return None
 
+    def _rb_needs_gemini(self, low):
+        try:
+            if not self.gem_ok():
+                return False
+        except Exception:
+            return False
+        try:
+            if needs_live(low):
+                return True
+        except Exception:
+            pass
+        keys = ("python", "script", "debug", "write code", "write a program",
+                "research", "regex", "javascript", "html", "sql")
+        return any(k in low for k in keys)
+
     def ask_gemini(self, text):
         try:
             low = text.lower().strip()
@@ -4759,7 +4774,7 @@ class BusinessDashboard(App):
             if qc:
                 self.reply(qc)
                 return
-            hard = low.startswith("gemini") or len(text) > 1500
+            hard = low.startswith("gemini") or len(text) > 1500 or self._rb_needs_gemini(low)
             if hard or not self.cfg.get("local", True):
                 self._ask_cloud(text)
                 return
@@ -4838,6 +4853,9 @@ class BusinessDashboard(App):
                         if shown:
                             Clock.schedule_once(lambda dt, tt=shown: self._stream_show(tt), 0)
             out = acc.strip()
+            if out.upper().startswith("ESCALATE") and self.gem_ok():
+                Clock.schedule_once(lambda dt: (self._stream_clear(), self._ask_cloud(text)), 0)
+                return
             out = re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
         except Exception as e:
             err = str(e)
