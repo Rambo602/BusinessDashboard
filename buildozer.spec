@@ -13,7 +13,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.6.32
+version = 1.6.33
 
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy,sqlite3,certifi,openssl
 
@@ -21,7 +21,7 @@ orientation = portrait
 
 fullscreen = 0
 
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA,RECORD_AUDIO,WAKE_LOCK,RECEIVE_BOOT_COMPLETED,QUERY_ALL_PACKAGES,REQUEST_INSTALL_PACKAGES,REQUEST_INSTALL_PACKAGES,com.android.alarm.permission.SET_ALARM,POST_NOTIFICATIONS,FOREGROUND_SERVICE,FOREGROUND_SERVICE_DATA_SYNC
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA,RECORD_AUDIO,WAKE_LOCK,RECEIVE_BOOT_COMPLETED,QUERY_ALL_PACKAGES,REQUEST_INSTALL_PACKAGES,REQUEST_INSTALL_PACKAGES,com.android.alarm.permission.SET_ALARM,POST_NOTIFICATIONS,FOREGROUND_SERVICE,FOREGROUND_SERVICE_DATA_SYNC,com.termux.permission.RUN_COMMAND
 
 android.api = 33
 android.ndk = 25b
