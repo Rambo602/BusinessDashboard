@@ -351,6 +351,26 @@ def autosize(lbl):
 from kivy.metrics import dp as _dp
 
 try:
+    import rambo_profile as RP
+except Exception:
+    RP = None
+
+
+def _rp_profile():
+    try:
+        return RP.PROFILE
+    except Exception:
+        return "You are RAMBO AI, a smart, friendly assistant on the user's Android phone. "
+
+
+def _rp_extra(t):
+    try:
+        e = RP.extra(t)
+        return (" " + e) if e else ""
+    except Exception:
+        return ""
+
+try:
     import ssl as _ssl, certifi as _certifi
     os.environ["SSL_CERT_FILE"] = _certifi.where()
     _ssl._create_default_https_context = lambda *a, **k: _ssl.create_default_context(cafile=_certifi.where())
@@ -1572,6 +1592,8 @@ class BusinessDashboard(App):
         self._btn(c, "DELETE PROJECT (tap twice)", self.proj_delete, AMBER)
         self._head(c, "WHAT TO DO WITH THE RESULT", GREEN)
         self._btn(c, "SHARE RESULT (Claude, ChatGPT, Grok, Gemini...)", self.proj_share2, CYAN, 56)
+        self._btn(c, "SEND TO CLAUDE (brings the reply back)", lambda *a: self.proj_to_app("claude"), CYAN, 56)
+        self._btn(c, "SEND TO CHATGPT", lambda *a: self.proj_to_app("chatgpt"), GREEN)
         self._btn(c, "SAVE PDF", self.proj_pdf, GREEN)
         self._btn(c, "SAVE TEXT", self.proj_txt, GREEN)
         self._btn(c, "COPY RESULT", self.proj_copy, CYAN)
@@ -1678,6 +1700,106 @@ class BusinessDashboard(App):
         loc = u + timedelta(hours=std + (1 if dst else 0))
         s = loc.strftime("%I:%M %p on %A, %B %d, %Y").lstrip("0")
         return "In " + place.title() + " it is " + s + (" (daylight saving)" if dst else "")
+
+    RB_APPS = {"claude": ("com.anthropic.claude", "Claude"),
+               "chatgpt": ("com.openai.chatgpt", "ChatGPT"),
+               "grok": ("ai.x.grok", "Grok"),
+               "gemini": ("com.google.android.apps.bard", "Gemini")}
+
+    def rb_send(self, key, text, pid=None):
+        import time as _t
+        pkg, label = self.RB_APPS[key]
+        try:
+            brief = RP.CLAUDE_BRIEF
+        except Exception:
+            brief = ""
+        out = (brief + text).strip()
+        try:
+            from kivy.core.clipboard import Clipboard
+            Clipboard.copy(out)
+        except Exception:
+            pass
+        self._rb_wait = {"label": label, "sent": out, "t": _t.time(), "pid": pid}
+        try:
+            Clock.unschedule(self._rb_poll)
+        except Exception:
+            pass
+        Clock.schedule_interval(self._rb_poll, 1.5)
+        tail = " Tap copy on its answer, then come back here and I will grab it."
+        try:
+            from jnius import autoclass
+            Intent = autoclass("android.content.Intent")
+            JString = autoclass("java.lang.String")
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            i = Intent()
+            i.setAction(Intent.ACTION_SEND)
+            i.setType("text/plain")
+            i.setPackage(pkg)
+            i.putExtra(Intent.EXTRA_TEXT, JString(out[:90000]))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            act.startActivity(i)
+            return "Sent to " + label + "." + tail
+        except Exception as e:
+            self.err("send " + key, e)
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            li = act.getPackageManager().getLaunchIntentForPackage(pkg)
+            if li is None:
+                self._rb_wait = None
+                return label + " is not installed. Text copied."
+            act.startActivity(li)
+            return "Opened " + label + ". Paste the text in." + tail
+        except Exception as e:
+            self.err("open " + key, e)
+            self._rb_wait = None
+            return "Could not open " + label + ". Text copied: paste it there."
+
+    def _rb_poll(self, dt):
+        import time as _t
+        w = getattr(self, "_rb_wait", None)
+        if not w or _t.time() - w["t"] > 1800:
+            self._rb_wait = None
+            return False
+        try:
+            from kivy.core.clipboard import Clipboard
+            c = (Clipboard.paste() or "").strip()
+        except Exception:
+            return True
+        if len(c) < 20 or c[:40] == w["sent"][:40]:
+            return True
+        self._rb_wait = None
+        self._rb_last = c
+        if w.get("pid") is not None:
+            try:
+                self.db.add_plog(w["pid"], "pal", w["label"] + " replied: " + c[:3000])
+                self.update_proj_view()
+            except Exception as e:
+                self.err("rb log", e)
+            self.flash(w["label"] + " reply added to the project")
+        else:
+            self.reply(w["label"] + " replied:\n" + c[:3000])
+        return False
+
+    def _rb_cmd(self, text):
+        m = re.match(r"^(?:ask|tell|send(?: this)? to|to)\s+(claude|chat\s?gpt|grok|gemini)\s*[:,]?\s*(.*)$",
+                     text.strip(), re.I | re.S)
+        if not m:
+            return None
+        key = m.group(1).lower().replace(" ", "")
+        msg = m.group(2).strip()
+        if not msg:
+            last = [t for r, t in self.hist if r == "model"]
+            msg = last[-1] if last else ""
+        if not msg:
+            return "Type: ask claude <your question>"
+        return self.rb_send(key, msg)
+
+    def proj_to_app(self, key):
+        title, text = self._proj_export()
+        if not text:
+            return
+        self.flash(self.rb_send(key, title + "\n\n" + text, self.cur_proj))
 
     def proj_copy(self, *a):
         try:
@@ -4829,6 +4951,10 @@ class BusinessDashboard(App):
             words = ("code", "script", "write ", "essay", "research", "analy",
                      "compare", "in detail", "plan ", "translate", "summar",
                      "debug", "calculate", "step by step")
+            rc = self._rb_cmd(text)
+            if rc:
+                self.reply(rc)
+                return
             qt = self._quick_time(text)
             if qt:
                 self.reply(qt)
@@ -4877,8 +5003,8 @@ class BusinessDashboard(App):
         try:
             import urllib.request
             sp = ("You are RAMBO AI, a smart, friendly assistant on the user's Android phone. "
-                  "Answer in one to three short sentences. "
-                  "If you are not sure, say so instead of guessing. For safety topics put the warning first. ")
+                  ""
+                  "If you are not sure, say so instead of guessing. ")
             if facts:
                 sp += "Known facts about the user: " + "; ".join(facts) + ". "
             if notes:
@@ -4891,6 +5017,7 @@ class BusinessDashboard(App):
                     sp += " " + kbt
             except Exception:
                 pass
+            sp += _rp_extra(text)
             sysm = {"role": "system", "content": sp}
             body = json.dumps({"messages": [sysm] + msgs, "max_tokens": 250,
                                     "chat_template_kwargs": {"enable_thinking": False}}).encode()
