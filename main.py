@@ -2713,6 +2713,8 @@ class BusinessDashboard(App):
             short, _f = self.acc_run("acc tap " + lab)
             if short.startswith("Tapped"):
                 break
+        else:
+            self.acc_run("acc tapxy 975 2175")
         S = None
         try:
             from jnius import autoclass
@@ -2730,7 +2732,7 @@ class BusinessDashboard(App):
                     cur = str(S.screenText() or "")
             except Exception:
                 cur = ""
-            if cur and cur == prev and len(cur) > len(q) + 80:
+            if cur and cur == prev and q[-40:] in cur and len(cur) - cur.rfind(q[-40:]) - len(q[-40:]) > 20:
                 reply = cur
                 break
             prev = cur
@@ -3018,7 +3020,7 @@ class BusinessDashboard(App):
                     cur = str(S.screenText() or "")
             except Exception:
                 cur = ""
-            if cur and cur == prev and len(cur) > len(q) + 80:
+            if cur and cur == prev and q[-40:] in cur and len(cur) - cur.rfind(q[-40:]) - len(q[-40:]) > 20:
                 reply = cur
                 break
             prev = cur
