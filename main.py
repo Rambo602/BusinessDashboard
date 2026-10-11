@@ -2565,6 +2565,7 @@ class BusinessDashboard(App):
         return n > 0
 
     def _v72_status(self, msg):
+        self._v78_msg = str(msg).replace("\n", " ")[:55]
         try:
             Clock.schedule_once(lambda dt: self.flash(msg), 0)
         except Exception:
@@ -2918,6 +2919,41 @@ class BusinessDashboard(App):
         self._v75_say("Result:\n" + out[:700])
         return out
 
+    def _v78_stat(self, msg):  # V78_STICKY
+        self._v78_msg = str(msg).replace("\n", " ")[:55]
+
+    def _v78_start(self):
+        self._v78_on = True
+        self._v78_msg = "starting"
+        threading.Thread(target=self._v78_loop, daemon=True).start()
+
+    def _v78_loop(self):
+        try:
+            from jnius import autoclass
+            from android.runnable import run_on_ui_thread
+            Toast = autoclass("android.widget.Toast")
+            JS = autoclass("java.lang.String")
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+        except Exception as e:
+            self.err("v78 toast", e)
+            return
+        box = {"t": None}
+
+        @run_on_ui_thread
+        def show(m):
+            try:
+                if box["t"] is not None:
+                    box["t"].cancel()
+                box["t"] = Toast.makeText(act, JS(m), 1)
+                box["t"].show()
+            except Exception:
+                pass
+
+        while getattr(self, "_v78_on", False):
+            show("AUTO RUNNING: " + getattr(self, "_v78_msg", "working"))
+            time.sleep(3)
+        show("AUTO: finished")
+
     def _v75_front(self):
         try:
             from jnius import autoclass
@@ -2933,6 +2969,7 @@ class BusinessDashboard(App):
         self._v75_say("Asking Claude: " + q[:120])
         Clock.schedule_once(lambda dt: self.rb_send("claude", q), 0)
         time.sleep(8)
+        self._v78_stat("Tapping Send in Claude")
         for lab in ("Send message", "Send"):
             short, _f = self.acc_run("acc tap " + lab)
             if short.startswith("Tapped"):
@@ -2946,6 +2983,7 @@ class BusinessDashboard(App):
         prev, reply, t0 = "", "", time.time()
         while not self._v75_stop and time.time() - t0 < 150:
             time.sleep(5)
+            self._v78_stat("Waiting for Claude (%ds)" % int(time.time() - t0))
             cur = ""
             try:
                 if S is not None and str(S.currentPackage() or "") == "com.anthropic.claude":
@@ -2967,6 +3005,7 @@ class BusinessDashboard(App):
 
     def _v75_thread(self, goal):
         self.ka(True)
+        self._v78_start()
         try:
             try:
                 key = open(self.key_path).read().strip()
@@ -3007,6 +3046,7 @@ class BusinessDashboard(App):
             self._v75_say("Goal stopped by an error: " + str(e)[:120])
         finally:
             self.ka(False)
+            self._v78_on = False
 
     def _v72_newproj(self, *a):
         from kivy.uix.modalview import ModalView
