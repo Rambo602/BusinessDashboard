@@ -112,7 +112,7 @@ def http_post(url, headers, body):
     conn = cast("java.net.HttpURLConnection", URL(url).openConnection())
     conn.setRequestMethod("POST")
     conn.setConnectTimeout(10000)
-    conn.setReadTimeout(30000)
+    conn.setReadTimeout(60000)
     for k, v in headers.items():
         conn.setRequestProperty(k, v)
     conn.setDoOutput(True)
@@ -1733,12 +1733,12 @@ class BusinessDashboard(App):
         c.add_widget(self.proj_status)
         self.proj_log = autosize(Label(text="", color=TXT))
         c.add_widget(self.proj_log)
-        self.proj_note = mk_input("Message this project", multiline=True, height=_dp(80))
-        mic = NeonButton(glow=GREEN, text="MIC", size_hint_x=None, width=_dp(90), font_size="18sp")
+        self.proj_note = mk_input("Message this project", multiline=True, height=56)
+        mic = NeonButton(glow=GREEN, text="MIC", size_hint_x=None, width=_dp(70), font_size="16sp")
         mic.bind(on_release=self.speak_note)
-        snd = NeonButton(glow=CYAN, text="SEND", size_hint_x=None, width=_dp(100), font_size="18sp")
+        snd = NeonButton(glow=CYAN, text="SEND", size_hint_x=None, width=_dp(80), font_size="16sp")
         snd.bind(on_release=self.add_note)
-        r1 = BoxLayout(orientation="horizontal", spacing=6, size_hint_y=None, height=_dp(80))
+        r1 = BoxLayout(orientation="horizontal", spacing=6, size_hint_y=None, height=_dp(56))
         r1.add_widget(self.proj_note)
         r1.add_widget(mic)
         r1.add_widget(snd)
@@ -1746,7 +1746,7 @@ class BusinessDashboard(App):
                             ("PAUSE", lambda *a: self.auto_stop("Paused."), AMBER),
                             ("CLAUDE", lambda *a: self.proj_to_app("claude"), CYAN),
                             ("MENU", self._v69_menu, MAGENTA)])
-        bar = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=_dp(80) + 68, padding=[0, 6, 0, 0])
+        bar = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=_dp(56) + 68, padding=[0, 6, 0, 0])
         bar.add_widget(r1)
         bar.add_widget(r2)
         return bar
@@ -3090,6 +3090,10 @@ class BusinessDashboard(App):
     def _v82_tap(self, label):
         self._v78_stat("Tapping " + label[:30])
         short, _f = self.acc_run("acc tap " + label)
+        if label.strip().lower() in ("send", "send message") and not str(short).startswith("Tapped"):
+            short, _f = self.acc_run("acc tap Send message")
+            if not str(short).startswith("Tapped"):
+                short, _f = self.acc_run("acc tapxy 975 2175")
         time.sleep(2)
         return str(short) + " | " + self._v82_read()
 
@@ -3293,12 +3297,15 @@ class BusinessDashboard(App):
                 code, raw = gemini_try(key, json.dumps(payload).encode())
         except Exception as e:
             self.err("auto gemini net", str(e)[:100])
+            self._last_model_err = "Gemini net error: " + str(e)[:80]
             return None
         if code == 429:
             self.gem_mark_down()
+            self._last_model_err = "Gemini rate limit (429)"
             return None
         if code != 200:
             self.err("auto gemini " + str(code), raw[:150])
+            self._last_model_err = "Gemini " + str(code) + ": " + gem_msg(raw)
             return None
         try:
             parts = json.loads(raw)["candidates"][0]["content"]["parts"]
@@ -3385,7 +3392,7 @@ class BusinessDashboard(App):
                                        "No model answered. Start Gemma in Termux, or check the Gemini key. Paused.")
                         return
                     wait = min(10 * (2 ** (fails - 1)), 60)
-                    self.auto_note = "Waiting for a model, retry %d in %d s." % (fails, wait)
+                    self.auto_note = "Waiting for a model, retry %d in %d s. %s" % (fails, wait, getattr(self, "_last_model_err", ""))
                     self._auto_sleep(pid, gen, wait)
                     continue
                 fails = 0
@@ -6105,7 +6112,6 @@ class BusinessDashboard(App):
             "generationConfig": {"responseMimeType": "application/json"},
         }
         self.thinking = self.add_msg("...", False)
-        Clock.schedule_once(lambda dt: self.flash("Still waiting on Gemini..."), 15)
         body = json.dumps(payload).encode()
         threading.Thread(target=self._gemini_thread, args=(key, body), daemon=True).start()
 
