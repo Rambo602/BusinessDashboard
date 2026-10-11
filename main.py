@@ -2878,6 +2878,11 @@ class BusinessDashboard(App):
         self._v72_status(m.replace("\n", " ")[:55])
 
     def _v75_goal(self, goal):
+        try:  # V81_CACHE
+            from jnius import autoclass as _ac81
+            self._v81_S = _ac81("org.rambo.acc.RamboAccService")
+        except Exception:
+            pass
         self._v75_stop = False
         self._v75_ok = False
         self.reply("Goal started: " + goal[:200] + "\nType stop goal to cancel.")
@@ -2971,7 +2976,7 @@ class BusinessDashboard(App):
         time.sleep(8)
         try:  # V80_SHARE
             from jnius import autoclass as _ac80
-            _S80 = _ac80("org.rambo.acc.RamboAccService")
+            _S80 = getattr(self, "_v81_S", None) or _ac80("org.rambo.acc.RamboAccService")
             _pk = str(_S80.currentPackage() or "")
             _scr = str(_S80.screenText() or "")
             self._v75_say("DEBUG screen: pkg=%s text=%s" % (_pk, _scr[:150].replace("\n", " | ")))
@@ -2996,7 +3001,7 @@ class BusinessDashboard(App):
         S = None
         try:
             from jnius import autoclass
-            S = autoclass("org.rambo.acc.RamboAccService")
+            S = getattr(self, "_v81_S", None) or autoclass("org.rambo.acc.RamboAccService")
         except Exception:
             pass
         prev, reply, t0 = "", "", time.time()
@@ -5555,7 +5560,8 @@ class BusinessDashboard(App):
         low = body.lower()
         try:
             from jnius import autoclass
-            S = autoclass("org.rambo.acc.RamboAccService")
+            S = getattr(self, "_v81_S", None) or autoclass("org.rambo.acc.RamboAccService")  # V81_CLS
+            self._v81_S = S
         except Exception as e:
             return ("Accessibility code is not in this build.", None)
         if low in ("", "help"):
