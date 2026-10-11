@@ -2969,6 +2969,15 @@ class BusinessDashboard(App):
         self._v75_say("Asking Claude: " + q[:120])
         Clock.schedule_once(lambda dt: self.rb_send("claude", q), 0)
         time.sleep(8)
+        try:  # V79_SHARE
+            from jnius import autoclass as _ac79
+            _scr = str(_ac79("org.rambo.acc.RamboAccService").screenText() or "")
+            if "Send to" in _scr:
+                self._v78_stat("Choosing New chat in Claude")
+                self.acc_run("acc tap New chat")
+                time.sleep(3)
+        except Exception:
+            pass
         self._v78_stat("Tapping Send in Claude")
         for lab in ("Send message", "Send"):
             short, _f = self.acc_run("acc tap " + lab)
@@ -5454,8 +5463,9 @@ class BusinessDashboard(App):
             self._v75_install()
         except Exception:
             pass
-        if low in ("stop goal", "cancel goal"):
+        if low in ("stop goal", "cancel goal") or (getattr(self, "_v78_on", False) and low in ("stop", "stop task", "stop auto running", "stop running", "cancel")):  # V79_STOPFIX
             self._v75_stop = True
+            self._v78_on = False
             _ev = getattr(self, "_v75_ev_ok", None)
             if _ev is not None:
                 _ev.set()
