@@ -3341,7 +3341,7 @@ class BusinessDashboard(App):
                 if live and self.auto_steps == 0 and not any(
                         t.startswith("WEB") for ts, k, t in self.db.plog(pid, 30)):
                     self._auto_web(pid, "search", goal.replace("gemini:", "").strip()[:120])
-                order = ["gemma", "gemini"]
+                order = ["gemini", "gemma"] if self.gem_ok() else ["gemma", "gemini"]
                 if pick_first(goal) == "gemini" and self.gem_ok():
                     order = ["gemini", "gemma"]
                 res, src, spare = None, "", None
