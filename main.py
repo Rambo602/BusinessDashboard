@@ -111,8 +111,8 @@ def http_post(url, headers, body):
     Scanner = autoclass("java.util.Scanner")
     conn = cast("java.net.HttpURLConnection", URL(url).openConnection())
     conn.setRequestMethod("POST")
-    conn.setConnectTimeout(30000)
-    conn.setReadTimeout(60000)
+    conn.setConnectTimeout(10000)
+    conn.setReadTimeout(30000)
     for k, v in headers.items():
         conn.setRequestProperty(k, v)
     conn.setDoOutput(True)
@@ -6105,6 +6105,7 @@ class BusinessDashboard(App):
             "generationConfig": {"responseMimeType": "application/json"},
         }
         self.thinking = self.add_msg("...", False)
+        Clock.schedule_once(lambda dt: self.flash("Still waiting on Gemini..."), 15)
         body = json.dumps(payload).encode()
         threading.Thread(target=self._gemini_thread, args=(key, body), daemon=True).start()
 
