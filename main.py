@@ -2996,10 +2996,12 @@ class BusinessDashboard(App):
         except Exception as e:
             self._v75_say("DEBUG share error: " + str(e)[:100])
         self._v78_stat("Tapping Send in Claude")
-        for lab in ("Send message", "Send"):
-            short, _f = self.acc_run("acc tap " + lab)
-            if short.startswith("Tapped"):
-                break
+        short, _f = self.acc_run("acc tapxy 975 1337")
+        if not str(short).startswith("Tapped"):
+            for lab in ("Send message", "Send"):
+                short, _f = self.acc_run("acc tap " + lab)
+                if short.startswith("Tapped"):
+                    break
         S = None
         try:
             from jnius import autoclass
