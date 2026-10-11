@@ -2543,8 +2543,26 @@ class BusinessDashboard(App):
     V72_SAFE = re.compile(r"^(ls|cat|head|tail|grep|pwd|echo|wc|find|df|du|uname|date|whoami|ps|id|which|stat|file|sort|uniq|python -m py_compile|git (status|log|diff|branch)|pip list|pkg list-installed)\b")
     V72_BAD = re.compile(r"(\brm\s+-[a-z]*[rf]|\bdd\s+if|\bmkfs|\bshutdown|\breboot|:\(\)\s*\{|>\s*/dev/|\bchmod\s+-R\s+777|\b(curl|wget)\b[^|]*\|\s*(ba)?sh)", re.I)
 
-    def _v72_is_safe(self, cmd):
-        return bool(self.V72_SAFE.match(cmd)) and not re.search(r"[;&|<>`$]", cmd)
+    V77_ASK = re.compile(r"(\brm\b|\brmdir\b|\bmv\b|\bchmod\b|\bchown\b|\bkill(all)?\b|\bpkill\b|\bsudo\b|\bsu\b|\buninstall\b|\bpurge\b|\bpkg\s+(remove|autoclean)|\bgit\s+(push|reset|clean|checkout|rebase|restore)|\b(curl|wget|nc|ncat|ssh|scp|sftp|ftp|telnet|socat)\b|\btee\b|\bsed\s+-i|>|\btruncate\b|\bshred\b|\bcrontab\b|\bnohup\b|\beval\b|\bexec\b|\bam\s+start|\bpm\s+(clear|uninstall)|\.key\b|token|\.ssh|secret|password|termux\.properties|\.bashrc|\.env\b|os\.(remove|unlink|rmdir|system|popen|rename)|shutil|rmtree|subprocess|socket|urllib|requests\.|\bopen\([^)]*['\"][wa+])", re.I)
+
+    def _v77_needs_ok(self, cmd):
+        c = re.sub(r"2>&1|2>/dev/null|>/dev/null", "", cmd)
+        return bool(self.V77_ASK.search(c))
+
+    def _v72_is_safe(self, cmd):  # V76_SAFE
+        if re.search(r"[<>`]", cmd) or re.search(r"\bfind\b.*-(exec|delete|ok)\b", cmd):
+            return False
+        flat = re.sub(r"\$\(|\)", " ; ", cmd)
+        segs = re.split(r"&&|\|\||;|\|", flat)
+        n = 0
+        for sg in segs:
+            sg = sg.strip()
+            if not sg.strip("\"' "):
+                continue
+            n += 1
+            if not (self.V72_SAFE.match(sg) or re.match(r"^(tr|cut|basename|dirname|printf|true)\b", sg)):
+                return False
+        return n > 0
 
     def _v72_status(self, msg):
         try:
@@ -2887,7 +2905,7 @@ class BusinessDashboard(App):
     def _v75_term(self, cmd):
         if self.V72_BAD.search(cmd):
             return "BLOCKED: destructive command"
-        if self._auto_risky(cmd) or not self._v72_is_safe(cmd):
+        if self._auto_risky(cmd) or self._v77_needs_ok(cmd):  # V77_AUTO
             ev = threading.Event()
             self._v75_ev_ok = ev
             self._v75_ok = False
@@ -2896,7 +2914,9 @@ class BusinessDashboard(App):
             if not self._v75_ok:
                 return "NOT APPROVED (no approval, so it was not run)"
         self._v75_say("Running in Termux: " + cmd[:100])
-        return self._v72_run_termux(cmd)
+        out = self._v72_run_termux(cmd)
+        self._v75_say("Result:\n" + out[:700])
+        return out
 
     def _v75_front(self):
         try:
