@@ -13,7 +13,7 @@ source.dir = .
 
 source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt
 
-version = 1.6.43
+version = 1.6.44
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy,sqlite3,certifi,openssl
 
 orientation = portrait

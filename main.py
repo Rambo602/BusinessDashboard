@@ -94,7 +94,7 @@ ExceptionManager.add_handler(CrashLogger())
 def build_system(facts):
     s = ('You are RAMBO AI, a friendly voice assistant on the user\'s Android phone. '
          'Reply ONLY with JSON: {"commands": [], "reply": "what you say to the user"}. '
-         'Keep the reply short and natural because it is spoken aloud. No markdown. '
+         'Keep replies short for simple questions. When asked to explain or write code, give a complete answer and put code inside ``` blocks. '
          'Put phone actions in "commands" only when the user asked for an action. '
          'Allowed commands: open <app name or website>, search <text>, call <number>, '
          'text <number> <message>, timer <minutes>, alarm HH:MM, play <what to play on YouTube>. Max 5 commands. '
@@ -2484,10 +2484,10 @@ class BusinessDashboard(App):
         out = ""
         try:
             sp = ("You are RAMBO AI, a smart, friendly assistant on the user's Android phone. "
-                  "Answer clearly in two to five practical sentences. If you are not sure, say so. ")
+                  "Answer clearly and completely. Follow the requested format exactly, including numbered steps. Put any code inside ``` blocks. If you are not sure, say so. ")
             if facts:
                 sp += "Known facts about the user: " + "; ".join(facts) + ". "
-            out = gemma_chat(sp, text, max_tokens=300)
+            out = gemma_chat(sp, text, max_tokens=700)
         except Exception as e:
             self.err("gemma only", str(e)[:100])
 
