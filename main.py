@@ -2893,6 +2893,7 @@ class BusinessDashboard(App):
                 "{\"say\": \"short status for the user\", \"action\": \"termux or claude or done\", \"arg\": \"...\"}. "
                 "termux: arg is ONE shell command for Termux (Linux, no root, use pkg not apt). Read-only commands run at once, others need the user's approval. "
                 "claude: arg is a question or task for the Claude app. It is slow, so use it only for hard research or when stuck. "
+                "open: arg is an app name or package to open (e.g. chrome or com.android.chrome); returns what is on its screen. tap: arg is a button label to tap in the current app; returns the new screen. read: returns the current screen text. home: returns to RAMBO AI. For multi-app goals: open the app, tap or read, then home, then done. "
                 "done: arg is the final answer for the user. Never use rm -rf, dd or mkfs. Use the step results shown to decide the next step. Use done as soon as the goal is met.")
         body = json.dumps({"systemInstruction": {"parts": [{"text": sysm}]},
                            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -2911,7 +2912,8 @@ class BusinessDashboard(App):
     def _v75_term(self, cmd):
         if self.V72_BAD.search(cmd):
             return "BLOCKED: destructive command"
-        if self._auto_risky(cmd) or self._v77_needs_ok(cmd):  # V77_AUTO
+        _safe83 = bool(re.match(r"^(am start|monkey -p)\b", cmd.strip())) and not re.search(r"[;&|`$<>]", cmd)
+        if not _safe83 and (self._auto_risky(cmd) or self._v77_needs_ok(cmd)):  # V77_AUTO
             ev = threading.Event()
             self._v75_ev_ok = ev
             self._v75_ok = False
@@ -3027,6 +3029,73 @@ class BusinessDashboard(App):
             reply = reply[k + len(q[-40:]):]
         return reply.strip()[:1500]
 
+    def _v82_log(self, goal, steps, result):
+        try:
+            import os, json, time
+            f = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rambo_log.json")
+            try:
+                data = json.load(open(f))
+            except Exception:
+                data = []
+            data.append({"time": time.time(), "goal": goal, "steps": steps, "result": result})
+            json.dump(data, open(f, "w"), indent=2)
+        except Exception as e:
+            self.err("v82 log", e)
+
+    def _v82_read(self):
+        try:
+            from jnius import autoclass
+            S = getattr(self, "_v81_S", None) or autoclass("org.rambo.acc.RamboAccService")
+            pk = str(S.currentPackage() or "")
+            tx = str(S.screenText() or "").replace("\n", " | ")
+            return "[%s] %s" % (pk, tx[:1200])
+        except Exception as e:
+            return "Could not read screen: " + str(e)[:100]
+
+    def _v82_open(self, name):
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            Intent = autoclass("android.content.Intent")
+            pm = act.getPackageManager()
+            pkg = name.strip()
+            if "." not in pkg:
+                low, found = pkg.lower(), ""
+                apps = pm.getInstalledApplications(0)
+                for i in range(apps.size()):
+                    ai = apps.get(i)
+                    try:
+                        lab = str(pm.getApplicationLabel(ai)).lower()
+                    except Exception:
+                        continue
+                    if low in lab and pm.getLaunchIntentForPackage(ai.packageName):
+                        found = str(ai.packageName)
+                        break
+                if not found:
+                    return "App not found: " + name + ". Try the package name."
+                pkg = found
+            li = pm.getLaunchIntentForPackage(pkg)
+            if li is None:
+                return "Cannot launch " + pkg
+            li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            self._v78_stat("Opening " + pkg)
+            act.startActivity(li)
+            time.sleep(4)
+            return self._v82_read()
+        except Exception as e:
+            return "Open failed: " + str(e)[:100]
+
+    def _v82_tap(self, label):
+        self._v78_stat("Tapping " + label[:30])
+        short, _f = self.acc_run("acc tap " + label)
+        time.sleep(2)
+        return str(short) + " | " + self._v82_read()
+
+    def _v82_home(self):
+        self._v75_front()
+        time.sleep(2)
+        return "Back in RAMBO AI"
+
     def _v75_thread(self, goal):
         self.ka(True)
         self._v78_start()
@@ -3055,12 +3124,21 @@ class BusinessDashboard(App):
                 arg = str(d.get("arg", "")).strip()
                 self._v75_say("Step %d: %s" % (n, (str(d.get("say", "")) or act)[:160]))
                 if act == "done":
+                    self._v82_log(goal, hist, arg)
                     self._v75_say("DONE: " + arg[:1500])
                     return
                 if act == "termux" and arg:
                     out = self._v75_term(arg)
                 elif act == "claude" and arg:
                     out = self._v75_claude(arg)
+                elif act == "open" and arg:
+                    out = self._v82_open(arg)
+                elif act == "tap" and arg:
+                    out = self._v82_tap(arg)
+                elif act == "read":
+                    out = self._v82_read()
+                elif act == "home":
+                    out = self._v82_home()
                 else:
                     out = "Unknown or empty action"
                 hist.append("%d. %s %s -> %s" % (n, act, arg[:300], out[:900]))
