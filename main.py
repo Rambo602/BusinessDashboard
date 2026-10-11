@@ -1738,7 +1738,7 @@ class BusinessDashboard(App):
         mic.bind(on_release=self.speak_note)
         snd = NeonButton(glow=CYAN, text="SEND", size_hint_x=None, width=_dp(100), font_size="18sp")
         snd.bind(on_release=self.add_note)
-        r1 = BoxLayout(orientation="horizontal", spacing=6, size_hint_y=None, height=56)
+        r1 = BoxLayout(orientation="horizontal", spacing=6, size_hint_y=None, height=_dp(80))
         r1.add_widget(self.proj_note)
         r1.add_widget(mic)
         r1.add_widget(snd)
@@ -1746,7 +1746,7 @@ class BusinessDashboard(App):
                             ("PAUSE", lambda *a: self.auto_stop("Paused."), AMBER),
                             ("CLAUDE", lambda *a: self.proj_to_app("claude"), CYAN),
                             ("MENU", self._v69_menu, MAGENTA)])
-        bar = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=124, padding=[0, 6, 0, 0])
+        bar = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None, height=_dp(80) + 68, padding=[0, 6, 0, 0])
         bar.add_widget(r1)
         bar.add_widget(r2)
         return bar
