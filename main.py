@@ -3130,7 +3130,13 @@ class BusinessDashboard(App):
                 if act == "termux" and arg:
                     out = self._v75_term(arg)
                 elif act == "claude" and arg:
-                    out = self._v75_claude(arg)
+                    try:
+                        import sys as _s83
+                        _s83.path.insert(0, os.path.expanduser("~"))
+                        from ask_claude import ask_claude as _ac83
+                        out = _ac83(arg, "You are a helpful assistant. Answer concisely.")
+                    except Exception:
+                        out = self._v75_claude(arg)
                 elif act == "open" and arg:
                     out = self._v82_open(arg)
                 elif act == "tap" and arg:
