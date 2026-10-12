@@ -3188,7 +3188,7 @@ class BusinessDashboard(App):
                     "claude <question or task> asks the Claude app and returns its reply as a SCREEN line. It is slow, but when the goal says to ask Claude you MUST use it. "
                     "To inspect an APK run: termux ~/reverse.sh <apk path>. It prints a summary of the Java side only. "
                     "Never use rm -rf, dd or mkfs. Use one termux or claude command per turn. "
-                    "Only report results that appear in the log as TERMUX or SCREEN lines. Never say Claude answered unless a SCREEN Claude reply line is in the log. After a claude command, wait for its reply line before you set done.")
+                    "Only report results that appear in the log as TERMUX or SCREEN lines. Never say Claude answered unless a SCREEN Claude reply line is in the log. After a claude command, wait for its reply line before you set done. To ask Claude you must put a command like claude <question> in the commands list; writing it in note does nothing.")
 
     def _v72_orig_sys(self, p):
         s = ("You are RAMBO AI, working on a long project for the user, one small step per turn. "
@@ -3274,6 +3274,23 @@ class BusinessDashboard(App):
             return False
         return len(note) < 40
 
+    def _auto_groq(self, p, pid):
+        try:
+            payload = {
+                "systemInstruction": {"parts": [{"text": self._auto_sys(p)}]},
+                "contents": [{"role": "user",
+                              "parts": [{"text": self._auto_user(pid, 12, 500, 2000)}]}],
+            }
+            code, raw = _groq_fallback(json.dumps(payload).encode(), 0, "")
+            if code != 200:
+                self._last_model_err = "Groq failed"
+                return None
+            txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"]
+            return self._auto_parse(txt)
+        except Exception as e:
+            self._last_model_err = "Groq: " + str(e)[:80]
+            return None
+
     def _auto_gemini(self, p, pid, live):
         key = self.gem_key()
         try:
@@ -3348,9 +3365,9 @@ class BusinessDashboard(App):
                 if live and self.auto_steps == 0 and not any(
                         t.startswith("WEB") for ts, k, t in self.db.plog(pid, 30)):
                     self._auto_web(pid, "search", goal.replace("gemini:", "").strip()[:120])
-                order = ["gemma", "gemini"]
+                order = ["gemma", "gemini", "groq"]
                 if pick_first(goal) == "gemini" and self.gem_ok():
-                    order = ["gemini", "gemma"]
+                    order = ["gemini", "gemma", "groq"]
                 res, src, spare = None, "", None
                 for who in order:
                     if not self._auto_alive(pid, gen):
@@ -3364,7 +3381,12 @@ class BusinessDashboard(App):
                             got = self._auto_parse(txt)
                         except Exception as e:
                             self.err("auto gemma", str(e)[:100])
+                            self._last_model_err = "Gemma: " + str(e)[:80]
                             got = None
+                        if got and got[0] and got[0] == getattr(self, "_last_note", None):
+                            got = None
+                    elif who == "groq":
+                        got = self._auto_groq(p, pid)
                         if got and got[0] and got[0] == getattr(self, "_last_note", None):
                             got = None
                     else:
@@ -3377,7 +3399,7 @@ class BusinessDashboard(App):
                         spare = (got, "Gemma")
                         continue
                     if got:
-                        res, src = got, ("Gemma" if who == "gemma" else "Gemini")
+                        res, src = got, {"gemma": "Gemma", "groq": "Groq"}.get(who, "Gemini")
                         break
                 if res is None and spare:
                     res, src = spare
@@ -3403,12 +3425,17 @@ class BusinessDashboard(App):
                     self.db.add_plog(pid, "run", "Used Gemini for this step.")
                 self.auto_steps += 1
                 jobs, keep = [], []
+                if cmds:
+                    self.db.add_plog(pid, "run", "CMDS: " + json.dumps(cmds)[:200])
                 if sw:
                     jobs.append(("search", sw))
                 if ru:
                     jobs.append(("read", ru))
                 for cm in cmds:
                     c = cm.strip()
+                    _m = re.match(r"^(?:ask\s+)?claude\s*[:,\-]?\s*(.+)$", c, re.I | re.S)
+                    if _m:
+                        c = "claude " + _m.group(1).strip()
                     low = c.lower()
                     if low.startswith("search "):
                         jobs.append(("search", c[7:].strip()))
@@ -3456,7 +3483,7 @@ class BusinessDashboard(App):
                     self.notify("RAMBO AI needs you: " + pname, question)
                     Clock.schedule_once(lambda dt: self.speak(question), 0)
                     return
-                if done and not jobs and not claude_ran and (src == "Gemini" or self.auto_steps >= 3):
+                if done and not jobs and not claude_ran and (src in ("Gemini", "Groq") or self.auto_steps >= 3):
                     self._auto_end(pid, "done", None)
                     self.notify("Project finished: " + pname, (note or "Done.")[:150])
                     Clock.schedule_once(
