@@ -1499,7 +1499,7 @@ class BusinessDashboard(App):
             if not arts:
                 self.upd_set("No APK build found on GitHub.")
                 return
-            art = arts[0]
+            art = sorted(arts, key=lambda x: x.get("created_at", ""), reverse=True)[0]
             self.upd_set("Downloading newest build...")
 
             class NoRedir(urllib.request.HTTPRedirectHandler):
