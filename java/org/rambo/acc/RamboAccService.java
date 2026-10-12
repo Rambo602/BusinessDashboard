@@ -192,6 +192,39 @@ public class RamboAccService extends AccessibilityService {
         return tap(rc.centerX(), rc.centerY());
     }
 
+    private static void findLowest(AccessibilityNodeInfo n, String q, AccessibilityNodeInfo[] best, int[] top, int depth) {
+        if (n == null || depth > 40) {
+            return;
+        }
+        String t = n.getText() == null ? "" : n.getText().toString().toLowerCase();
+        String d = n.getContentDescription() == null ? "" : n.getContentDescription().toString().toLowerCase();
+        if ((t.equals(q) || d.equals(q)) && n.isVisibleToUser()) {
+            Rect rc = new Rect();
+            n.getBoundsInScreen(rc);
+            if (rc.top > top[0]) {
+                top[0] = rc.top;
+                best[0] = n;
+            }
+        }
+        int cnt = n.getChildCount();
+        for (int i = 0; i < cnt; i++) {
+            findLowest(n.getChild(i), q, best, top, depth + 1);
+        }
+    }
+
+    public static boolean clickTextLast(String q) {
+        String low = q.toLowerCase().trim();
+        AccessibilityNodeInfo[] best = new AccessibilityNodeInfo[1];
+        int[] top = new int[]{-1};
+        for (AccessibilityNodeInfo r : roots()) {
+            findLowest(r, low, best, top, 0);
+        }
+        if (best[0] != null) {
+            return clickNode(best[0]);
+        }
+        return false;
+    }
+
     public static boolean clickText(String q) {
         String low = q.toLowerCase().trim();
         for (AccessibilityNodeInfo r : roots()) {
