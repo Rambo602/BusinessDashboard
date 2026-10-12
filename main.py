@@ -2540,7 +2540,7 @@ class BusinessDashboard(App):
         Clock.schedule_once(lambda dt: (self.refresh_projects(), self.update_proj_view()), 0)
         self.ka(False)
 
-    V72_SAFE = re.compile(r"^(~/reverse\.sh|ls|cat|head|tail|grep|pwd|echo|wc|find|df|du|uname|date|whoami|ps|id|which|stat|file|sort|uniq|python -m py_compile|git (status|log|diff|branch)|pip list|pkg list-installed)\b")
+    V72_SAFE = re.compile(r"^(~/reverse\.sh|ls|cat|head|tail|grep|pwd|echo|wc|find|df|du|uname|date|whoami|ps|id|which|stat|file|sort|uniq|unzip -p|strings|python -m py_compile|git (status|log|diff|branch)|pip list|pkg list-installed)\b")
     V72_BAD = re.compile(r"(\brm\s+-[a-z]*[rf]|\bdd\s+if|\bmkfs|\bshutdown|\breboot|:\(\)\s*\{|>\s*/dev/|\bchmod\s+-R\s+777|\b(curl|wget)\b[^|]*\|\s*(ba)?sh)", re.I)
 
     V77_ASK = re.compile(r"(\brm\b|\brmdir\b|\bmv\b|\bchmod\b|\bchown\b|\bkill(all)?\b|\bpkill\b|\bsudo\b|\bsu\b|\buninstall\b|\bpurge\b|\bpkg\s+(remove|autoclean)|\bgit\s+(push|reset|clean|checkout|rebase|restore)|\b(curl|wget|nc|ncat|ssh|scp|sftp|ftp|telnet|socat)\b|\btee\b|\bsed\s+-i|>|\btruncate\b|\bshred\b|\bcrontab\b|\bnohup\b|\beval\b|\bexec\b|\bam\s+start|\bpm\s+(clear|uninstall)|\.key\b|token|\.ssh|secret|password|termux\.properties|\.bashrc|\.env\b|os\.(remove|unlink|rmdir|system|popen|rename)|shutil|rmtree|subprocess|socket|urllib|requests\.|\bopen\([^)]*['\"][wa+])", re.I)
