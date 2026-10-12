@@ -2981,6 +2981,38 @@ class BusinessDashboard(App):
         except Exception as e:
             self.err("v75 front", e)
 
+    def _v87_clip(self):
+        box = {}
+        ev = threading.Event()
+        def rd(dt):
+            try:
+                from kivy.core.clipboard import Clipboard
+                box["t"] = Clipboard.paste() or ""
+            except Exception:
+                box["t"] = ""
+            ev.set()
+        Clock.schedule_once(rd, 0)
+        ev.wait(5)
+        return box.get("t", "")
+
+    def _v87_save(self, text, path):
+        import base64
+        tok = ""
+        try:
+            tp = os.path.join(self.user_data_dir, "exec.token")
+            if os.path.exists(tp):
+                tok = open(tp).read().strip()
+        except Exception:
+            tok = ""
+        if not tok:
+            return "no exec token"
+        b = base64.b64encode(text.encode("utf-8")).decode()
+        cmd = "echo " + b + " | base64 -d > " + path + " && wc -c " + path
+        rq = urllib.request.Request("http://127.0.0.1:8765/run", data=cmd.encode("utf-8"),
+                                    headers={"X-Token": tok}, method="POST")
+        with urllib.request.urlopen(rq, timeout=30) as r:
+            return r.read().decode("utf-8", "replace").strip()[-120:]
+
     def _v86_cont(self, q):
         from jnius import autoclass
         S = getattr(self, "_v81_S", None) or autoclass("org.rambo.acc.RamboAccService")
@@ -3025,15 +3057,34 @@ class BusinessDashboard(App):
                 break
             prev = cur
         self._rb_wait = None
+        txt, how = "", ""
+        try:
+            if S is not None and str(S.currentPackage() or "") == "com.anthropic.claude":
+                self.acc_run("acc clip RAMBO_NO_COPY")
+                s, _f = self.acc_run("acc tap Copy message")
+                if str(s).startswith("Tapped"):
+                    self._v75_front()
+                    time.sleep(2)
+                    got = (self._v87_clip() or "").strip()
+                    if got and got != "RAMBO_NO_COPY":
+                        txt, how = got, "copy button"
+        except Exception as e:
+            self._v75_say("DEBUG copy error: " + str(e)[:100])
         self._v75_front()
-        if not reply:
+        if not txt and reply:
+            k = reply.rfind(q[-40:])
+            if k >= 0:
+                reply = reply[k + len(q[-40:]):]
+            txt, how = reply.strip(), "screen text"
+        if not txt:
             return "Claude did not reply (it may be stuck). Do NOT ask Claude again. Use done and tell the user Claude did not answer."
-        k = reply.rfind(q[-40:])
-        if k >= 0:
-            reply = reply[k + len(q[-40:]):]
-        return reply.strip()[:1500]
+        try:
+            self._v75_say("Claude reply captured by %s, %d chars. Saved: %s" % (how, len(txt), self._v87_save(txt, "~/claude_reply.txt")))
+        except Exception as e:
+            self._v75_say("DEBUG save error: " + str(e)[:100])
+        return txt[:6000]
 
-    def _v75_claude(self, q, cont=False):
+    def _v75_claude(self, q, cont=False, strict=False):
         if cont:
             self._v75_say("Asking Claude (same chat): " + q[:120])
             sent = False
@@ -3043,6 +3094,8 @@ class BusinessDashboard(App):
                 self._v75_say("DEBUG cont error: " + str(e)[:100])
             if sent:
                 return self._v86_wait(q)
+            if strict:
+                return "Could not send in the current Claude chat. Open that chat on screen first. Do NOT ask Claude again. Use done and say it failed."
         return self._v75_claude_new(q)
 
     def _v75_claude_new(self, q):
@@ -3539,9 +3592,10 @@ class BusinessDashboard(App):
                             had = bool([t for ts, k, t in self.db.plog(pid, 60) if t.startswith("CLAUDE ASKED:")])
                             lg = (goal or "").lower()
                             cont = ("same chat" in lg or "current chat" in lg or (had and "new chat" not in lg))
+                            strict = ("same chat" in lg or "current chat" in lg)
                             self.db.add_plog(pid, "run", "CLAUDE ASKED: " + cq[:100] + (" [same chat]" if cont else " [new chat]"))
                             self._v75_stop = False
-                            rep = self._v75_claude(cq, cont)
+                            rep = self._v75_claude(cq, cont, strict)
                             rep = rep.split("\nCopy message")[0].strip()
                             self.db.add_plog(pid, "run", "SCREEN Claude reply: " + rep[:1500])
                     else:
