@@ -2698,7 +2698,7 @@ class BusinessDashboard(App):
             if self.V72_BAD.search(cmd):
                 self.db.add_plog(pid, "ask", "Blocked a dangerous Termux command: " + cmd[:200])
                 return
-            if self._auto_risky(cm) or not self._v72_is_safe(cmd):
+            if self._auto_risky(cm):
                 self._v72_pending = (cmd, pid)
                 self.db.add_plog(pid, "ask", "I want to run in Termux: " + cmd[:300] + ". Type approve in chat to run it, then tap RUN again.")
                 self._auto_end(pid, "waiting", None)
