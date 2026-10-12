@@ -3210,7 +3210,7 @@ class BusinessDashboard(App):
              "should come from the web, and put the source URL in the note. Do not use the "
              "open or search commands for browsing. "
              'Put a question in "question" if you need the user\'s input or hit a problem '
-             "(then leave commands empty). Set done true only when the goal is fully finished. "
+             "(then leave commands empty). Set done true only when the goal is fully finished. When the result is ready, put it in note, set done true and leave question empty. Never put a final result in question. "
              "Allowed commands: open <app>, timer <minutes>, alarm HH:MM, "
              "play <what to play on YouTube>. To play a song or video use the play command by "
              "itself. Max 3 commands. " + ACC_AUTO)
