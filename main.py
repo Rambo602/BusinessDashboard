@@ -3058,19 +3058,31 @@ class BusinessDashboard(App):
             prev = cur
         self._rb_wait = None
         txt, how = "", ""
+        diag = []
         try:
             if S is not None and str(S.currentPackage() or "") == "com.anthropic.claude":
+                diag.append("in Claude app, clipboard marker set")
                 self.acc_run("acc clip RAMBO_NO_COPY")
                 s, _f = self.acc_run("acc taplast Copy message")
+                diag.append("taplast result: " + str(s)[:100])
                 if str(s).startswith("Tapped"):
                     self._v75_front()
                     time.sleep(2)
                     got = (self._v87_clip() or "").strip()
+                    diag.append("clipboard length %d, starts: %r" % (len(got), got[:50]))
                     if got and got != "RAMBO_NO_COPY":
                         txt, how = got, "copy button"
         except Exception as e:
+            diag.append("copy error: " + str(e)[:200])
             self._v75_say("DEBUG copy error: " + str(e)[:100])
         self._v75_front()
+        try:
+            if not diag:
+                diag.append("not in the Claude app at capture time")
+            diag.append("method used: " + (how or "none"))
+            self._v87_save("\n".join(diag) + "\n", "~/claude_capture.log")
+        except Exception as e:
+            self._v75_say("DEBUG diag save error: " + str(e)[:80])
         if not txt and reply:
             k = reply.rfind(q[-40:])
             if k >= 0:
