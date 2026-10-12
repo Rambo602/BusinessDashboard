@@ -2274,6 +2274,11 @@ class BusinessDashboard(App):
         self.refresh_projects()
         self.update_proj_view()
         self.auto_gen = getattr(self, "auto_gen", 0) + 1
+        try:  # V86_CLS
+            from jnius import autoclass as _ac86
+            self._v81_S = getattr(self, "_v81_S", None) or _ac86("org.rambo.acc.RamboAccService")
+        except Exception as e:
+            self.err("acc class", e)
         self.ka(True)
         threading.Thread(target=self._auto_loop,
                          args=(self.cur_proj, self.auto_gen), daemon=True).start()
@@ -2998,12 +3003,10 @@ class BusinessDashboard(App):
         except Exception as e:
             self._v75_say("DEBUG share error: " + str(e)[:100])
         self._v78_stat("Tapping Send in Claude")
-        short, _f = self.acc_run("acc tapxy 975 1337")
+        short, _f = self.acc_run("acc tap Send message")
         if not str(short).startswith("Tapped"):
-            for lab in ("Send message", "Send"):
-                short, _f = self.acc_run("acc tap " + lab)
-                if short.startswith("Tapped"):
-                    break
+            short, _f = self.acc_run("acc tapxy 975 1370")
+        self._v78_stat("Send result: " + str(short)[:60])
         S = None
         try:
             from jnius import autoclass
