@@ -2894,7 +2894,7 @@ class BusinessDashboard(App):
         sysm = ("You are the planner for RAMBO AI, an Android assistant. The user gives a goal. Each turn reply with ONLY JSON: "
                 "{\"say\": \"short status for the user\", \"action\": \"termux or claude or done\", \"arg\": \"...\"}. "
                 "termux: arg is ONE shell command for Termux (Linux, no root, use pkg not apt). Read-only commands run at once, others need the user's approval. "
-                "claude: arg is a question or task for the Claude app. It is slow, so use it only for hard research or when stuck. "
+                "claude: arg is a question or task for the Claude app. It is slow, but when the goal says to ask Claude you MUST use it. "
                 "open: arg is an app name or package to open (e.g. chrome or com.android.chrome); returns what is on its screen. tap: arg is a button label to tap in the current app; returns the new screen. read: returns the current screen text. home: returns to RAMBO AI. For multi-app goals: open the app, tap or read, then home, then done. "
                 "done: arg is the final answer for the user. Never use rm -rf, dd or mkfs. Use the step results shown to decide the next step. Use done as soon as the goal is met.")
         body = json.dumps({"systemInstruction": {"parts": [{"text": sysm}]},
@@ -3191,7 +3191,7 @@ class BusinessDashboard(App):
         s = self._v72_orig_sys(p)
         return s + (" EXTRA COMMANDS: termux <one shell command> runs it in Termux (Linux shell, no root, use pkg not apt). "
                     "Read-only commands run at once; others wait for the user to approve. The output appears in the log as TERMUX lines on your next turn. "
-                    "claude <question or task> asks the Claude app and returns its reply as a SCREEN line. It is slow, so use it only for hard research or when stuck. "
+                    "claude <question or task> asks the Claude app and returns its reply as a SCREEN line. It is slow, but when the goal says to ask Claude you MUST use it. "
                     "Never use rm -rf, dd or mkfs. Use one termux or claude command per turn.")
 
     def _v72_orig_sys(self, p):
