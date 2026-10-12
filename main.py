@@ -3061,7 +3061,7 @@ class BusinessDashboard(App):
         try:
             if S is not None and str(S.currentPackage() or "") == "com.anthropic.claude":
                 self.acc_run("acc clip RAMBO_NO_COPY")
-                s, _f = self.acc_run("acc tap Copy message")
+                s, _f = self.acc_run("acc taplast Copy message")
                 if str(s).startswith("Tapped"):
                     self._v75_front()
                     time.sleep(2)
@@ -5855,6 +5855,10 @@ class BusinessDashboard(App):
                 return ("Use: acc tapxy 500 900", None)
             ok = bool(S.tap(int(p[0]), int(p[1])))
             return ("Tapped." if ok else "Tap failed.", None)
+        if low.startswith("taplast "):
+            t = body[8:].strip()
+            ok = bool(S.clickTextLast(t))
+            return (("Tapped " + t + ".") if ok else ("Could not find " + t + " on screen."), None)
         if low.startswith("tap "):
             t = body[4:].strip()
             ok = bool(S.clickText(t))
