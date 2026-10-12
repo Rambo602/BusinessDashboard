@@ -3447,7 +3447,7 @@ class BusinessDashboard(App):
                     Clock.schedule_once(
                         lambda dt: self.speak("Project " + pname + " is finished."), 0)
                     return
-                self._auto_sleep(pid, gen, (25 if src == "Gemini" else 6) + self._auto_delay(keep, len(keep)))
+                self._auto_sleep(pid, gen, (6 if src == "Gemini" else 6) + self._auto_delay(keep, len(keep)))
         except Exception as e:
             self.err("auto loop", e)
             try:
