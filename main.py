@@ -249,7 +249,7 @@ HEAVY_WORDS = ("analy", "strategy", "unreal", "blueprint", "script", "code",
 
 def needs_live(goal):
     low = (goal or "").lower()
-    return any(w in low for w in LIVE_WORDS)
+    return ("termux" not in low) and any(w in low for w in LIVE_WORDS)
 
 
 def pick_first(goal):
