@@ -3227,7 +3227,7 @@ class BusinessDashboard(App):
     def _auto_user(self, pid, n, cut, webcut=900):
         lines = []
         for ts, k, t in self.db.plog(pid, n):
-            lines.append(k.upper() + ": " + t[:(webcut if t.startswith(("WEB", "SCREEN")) else cut)])
+            lines.append(k.upper() + ": " + t[:(2500 if t.startswith("TERMUX") else (webcut if t.startswith(("WEB", "SCREEN")) else cut))])
         older = []
         try:
             p = self.db.get_project(pid)
