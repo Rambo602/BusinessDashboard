@@ -3187,7 +3187,8 @@ class BusinessDashboard(App):
                     "Read-only commands run at once; others wait for the user to approve. The output appears in the log as TERMUX lines on your next turn. "
                     "claude <question or task> asks the Claude app and returns its reply as a SCREEN line. It is slow, but when the goal says to ask Claude you MUST use it. "
                     "To inspect an APK run: termux ~/reverse.sh <apk path>. It prints a summary of the Java side only. "
-                    "Never use rm -rf, dd or mkfs. Use one termux or claude command per turn.")
+                    "Never use rm -rf, dd or mkfs. Use one termux or claude command per turn. "
+                    "Only report results that appear in the log as TERMUX or SCREEN lines. Never say Claude answered unless a SCREEN Claude reply line is in the log. After a claude command, wait for its reply line before you set done.")
 
     def _v72_orig_sys(self, p):
         s = ("You are RAMBO AI, working on a long project for the user, one small step per turn. "
@@ -3347,7 +3348,7 @@ class BusinessDashboard(App):
                 if live and self.auto_steps == 0 and not any(
                         t.startswith("WEB") for ts, k, t in self.db.plog(pid, 30)):
                     self._auto_web(pid, "search", goal.replace("gemini:", "").strip()[:120])
-                order = ["gemini", "gemma"] if self.gem_ok() else ["gemma", "gemini"]
+                order = ["gemma", "gemini"]
                 if pick_first(goal) == "gemini" and self.gem_ok():
                     order = ["gemini", "gemma"]
                 res, src, spare = None, "", None
@@ -3427,6 +3428,25 @@ class BusinessDashboard(App):
                     if not self._auto_alive(pid, gen):
                         return
                     self._auto_web(pid, kind, arg)
+                claude_ran = False
+                rest = []
+                for cm in keep:
+                    if cm.strip().lower().startswith("claude "):
+                        if claude_ran:
+                            continue
+                        claude_ran = True
+                        cq = cm.strip()[7:].strip()
+                        prior = [t for ts, k, t in self.db.plog(pid, 60) if t.startswith("CLAUDE ASKED: " + cq[:100])]
+                        if len(prior) >= 2:
+                            self.db.add_plog(pid, "run", "SCREEN Already asked Claude this twice. Do not ask again. Use done and say Claude did not answer.")
+                        else:
+                            self.db.add_plog(pid, "run", "CLAUDE ASKED: " + cq[:100])
+                            self._v75_stop = False
+                            rep = self._v75_claude(cq)
+                            self.db.add_plog(pid, "run", "SCREEN Claude reply: " + rep[:1500])
+                    else:
+                        rest.append(cm)
+                keep = rest
                 for n, cm in enumerate(keep):
                     Clock.schedule_once(lambda dt, cm=cm: self._auto_cmd(pid, cm), self._auto_delay(keep, n))
                 pname = p[1]
@@ -3436,7 +3456,7 @@ class BusinessDashboard(App):
                     self.notify("RAMBO AI needs you: " + pname, question)
                     Clock.schedule_once(lambda dt: self.speak(question), 0)
                     return
-                if done and not jobs and (src == "Gemini" or self.auto_steps >= 3):
+                if done and not jobs and not claude_ran and (src == "Gemini" or self.auto_steps >= 3):
                     self._auto_end(pid, "done", None)
                     self.notify("Project finished: " + pname, (note or "Done.")[:150])
                     Clock.schedule_once(
