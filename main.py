@@ -2277,6 +2277,8 @@ class BusinessDashboard(App):
         try:  # V86_CLS
             from jnius import autoclass as _ac86
             self._v81_S = getattr(self, "_v81_S", None) or _ac86("org.rambo.acc.RamboAccService")
+            if not bool(self._v81_S.isOn()):
+                self.proj_status.text = "Accessibility is OFF. Type: acc settings, turn on RAMBO AI, then tap START AUTO RUN."
         except Exception as e:
             self.err("acc class", e)
         self.ka(True)
@@ -2979,7 +2981,71 @@ class BusinessDashboard(App):
         except Exception as e:
             self.err("v75 front", e)
 
-    def _v75_claude(self, q):
+    def _v86_cont(self, q):
+        from jnius import autoclass
+        S = getattr(self, "_v81_S", None) or autoclass("org.rambo.acc.RamboAccService")
+        if str(S.currentPackage() or "") != "com.anthropic.claude":
+            self._v82_open("com.anthropic.claude")
+            time.sleep(2)
+        scr = str(S.screenText() or "")
+        if "Reply to Claude" not in scr:
+            self._v75_say("Not in a Claude chat, using a new chat instead")
+            return False
+        self._v78_stat("Typing in current Claude chat")
+        s, _f = self.acc_run("acc type " + q)
+        if not str(s).startswith("Typed"):
+            self._v75_say("DEBUG type failed: " + str(s)[:80])
+            return False
+        time.sleep(1)
+        s, _f = self.acc_run("acc tap Send message")
+        if not str(s).startswith("Tapped"):
+            s, _f = self.acc_run("acc tapxy 975 1370")
+        self._v78_stat("Send result: " + str(s)[:60])
+        return str(s).startswith("Tapped")
+
+    def _v86_wait(self, q):
+        S = None
+        try:
+            from jnius import autoclass
+            S = getattr(self, "_v81_S", None) or autoclass("org.rambo.acc.RamboAccService")
+        except Exception:
+            pass
+        prev, reply, t0 = "", "", time.time()
+        while not self._v75_stop and time.time() - t0 < 150:
+            time.sleep(5)
+            self._v78_stat("Waiting for Claude (%ds)" % int(time.time() - t0))
+            cur = ""
+            try:
+                if S is not None and str(S.currentPackage() or "") == "com.anthropic.claude":
+                    cur = str(S.screenText() or "")
+            except Exception:
+                cur = ""
+            if cur and cur == prev and q[-40:] in cur and len(cur) - cur.rfind(q[-40:]) - len(q[-40:]) > 20:
+                reply = cur
+                break
+            prev = cur
+        self._rb_wait = None
+        self._v75_front()
+        if not reply:
+            return "Claude did not reply (it may be stuck). Do NOT ask Claude again. Use done and tell the user Claude did not answer."
+        k = reply.rfind(q[-40:])
+        if k >= 0:
+            reply = reply[k + len(q[-40:]):]
+        return reply.strip()[:1500]
+
+    def _v75_claude(self, q, cont=False):
+        if cont:
+            self._v75_say("Asking Claude (same chat): " + q[:120])
+            sent = False
+            try:
+                sent = self._v86_cont(q)
+            except Exception as e:
+                self._v75_say("DEBUG cont error: " + str(e)[:100])
+            if sent:
+                return self._v86_wait(q)
+        return self._v75_claude_new(q)
+
+    def _v75_claude_new(self, q):
         self._v75_say("Asking Claude: " + q[:120])
         Clock.schedule_once(lambda dt: self.rb_send("claude", q), 0)
         time.sleep(8)
@@ -3470,9 +3536,13 @@ class BusinessDashboard(App):
                         if len(prior) >= 2:
                             self.db.add_plog(pid, "run", "SCREEN Already asked Claude this twice. Do not ask again. Use done and say Claude did not answer.")
                         else:
-                            self.db.add_plog(pid, "run", "CLAUDE ASKED: " + cq[:100])
+                            had = bool([t for ts, k, t in self.db.plog(pid, 60) if t.startswith("CLAUDE ASKED:")])
+                            lg = (goal or "").lower()
+                            cont = ("same chat" in lg or "current chat" in lg or (had and "new chat" not in lg))
+                            self.db.add_plog(pid, "run", "CLAUDE ASKED: " + cq[:100] + (" [same chat]" if cont else " [new chat]"))
                             self._v75_stop = False
-                            rep = self._v75_claude(cq)
+                            rep = self._v75_claude(cq, cont)
+                            rep = rep.split("\nCopy message")[0].strip()
                             self.db.add_plog(pid, "run", "SCREEN Claude reply: " + rep[:1500])
                     else:
                         rest.append(cm)
