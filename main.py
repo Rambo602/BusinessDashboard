@@ -3192,6 +3192,7 @@ class BusinessDashboard(App):
         return s + (" EXTRA COMMANDS: termux <one shell command> runs it in Termux (Linux shell, no root, use pkg not apt). "
                     "Read-only commands run at once; others wait for the user to approve. The output appears in the log as TERMUX lines on your next turn. "
                     "claude <question or task> asks the Claude app and returns its reply as a SCREEN line. It is slow, but when the goal says to ask Claude you MUST use it. "
+                    "To inspect an APK run: termux ~/reverse.sh <apk path>. It prints a summary of the Java side only. "
                     "Never use rm -rf, dd or mkfs. Use one termux or claude command per turn.")
 
     def _v72_orig_sys(self, p):
