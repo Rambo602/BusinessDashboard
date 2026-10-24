@@ -243,6 +243,7 @@ _gemini_try_cloud = gemini_try
 
 def _local_llm(body, timeout=400):
     # Gemini-shaped request in, Gemini-shaped reply out, answered by Qwen on the phone
+    has_img = False  # VISION_V1
     try:
         d = json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body)
         msgs = []
@@ -253,22 +254,35 @@ def _local_llm(body, timeout=400):
                 msgs.append({"role": "system", "content": t})
         for c in d.get("contents", []):
             parts = c.get("parts", [])
-            if any(("inline_data" in p or "inlineData" in p) for p in parts):
-                return 400, json.dumps({"error": {"message": "Qwen on the phone reads text only, so it cannot look at images, PDFs or audio yet."}})
+            imgs = []
+            for p in parts:
+                idd = p.get("inline_data") or p.get("inlineData")
+                if idd:
+                    mt = idd.get("mime_type") or idd.get("mimeType") or ""
+                    if not mt.startswith("image/"):
+                        return 400, json.dumps({"error": {"message": "Qwen on the phone reads text and pictures, not PDFs or audio."}})
+                    imgs.append("data:" + mt + ";base64," + idd.get("data", ""))
             t = " ".join(p.get("text", "") for p in parts if "text" in p)
-            if not t.strip():
+            if not t.strip() and not imgs:
                 continue
             r = "assistant" if c.get("role") == "model" else "user"
-            if msgs and msgs[-1]["role"] == r:
+            if imgs:
+                has_img = True
+                cont = [{"type": "text", "text": t or "Describe this picture."}]
+                for u in imgs:
+                    cont.append({"type": "image_url", "image_url": {"url": u}})
+                msgs.append({"role": r, "content": cont})
+            elif msgs and msgs[-1]["role"] == r and isinstance(msgs[-1]["content"], str):
                 msgs[-1]["content"] += "\n" + t
             else:
                 msgs.append({"role": r, "content": t})
         if not any(m["role"] == "user" for m in msgs):
             return 400, json.dumps({"error": {"message": "empty request"}})
-        total = sum(len(m["content"]) for m in msgs)
+        total = sum(len(m["content"]) for m in msgs if isinstance(m["content"], str))
         if total > 9000:
             last = msgs[-1]
-            last["content"] = last["content"][-max(1500, len(last["content"]) - (total - 9000)):]
+            if isinstance(last["content"], str):
+                last["content"] = last["content"][-max(1500, len(last["content"]) - (total - 9000)):]
         gc = d.get("generationConfig") or {}
         rb = {"messages": msgs, "max_tokens": 500, "temperature": 0.4,
               "chat_template_kwargs": {"enable_thinking": False}}
@@ -289,6 +303,8 @@ def _local_llm(body, timeout=400):
             return 500, json.dumps({"error": {"message": "Qwen returned an empty answer"}})
         return 200, json.dumps({"candidates": [{"content": {"parts": [{"text": out}]}, "finishReason": "STOP"}]})
     except Exception as e:
+        if has_img:
+            return 503, json.dumps({"error": {"message": "Qwen could not read the picture (" + str(e)[:60] + "). It needs the vision file: MORE tab, COPY QWEN + VISION SETUP, paste it in Termux."}})
         return 503, json.dumps({"error": {"message": "Qwen server not reachable: " + str(e)[:80]}})
 
 
@@ -514,6 +530,59 @@ def style_in(kw):
     kw.setdefault("cursor_color", CYAN)
     kw.setdefault("hint_text_color", (0.4, 0.55, 0.65, 1))
     return kw
+
+
+VISION_V1 = True
+VIS_SYS = ("You are RAMBO AI's guided vision. You are looking through the user's phone camera right now. "
+           "Talk like a helpful person standing next to them: plain, short, spoken sentences, no lists, no markdown. "
+           "Describe only what is really in the picture. Read any visible text exactly. If you are not sure, say so. "
+           "Answer the user's question about what the camera sees in at most three sentences.")
+
+QWEN_SETUP = r"""mkdir -p ~/models && cd ~/models
+[ -s qwen2b.gguf ] || curl -L -C - -o qwen2b.gguf "https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf"
+curl -L -C - -o qwen2b-mmproj.gguf "https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.mmproj-Q8_0.gguf"
+cat > ~/gemma.sh <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+PIDF=$HOME/.gemma.pid
+if [ -f "$PIDF" ] && kill -0 "$(cat $PIDF)" 2>/dev/null; then
+  echo "already running"; exit 0
+fi
+echo $$ > "$PIDF"
+termux-wake-lock
+while true; do
+  pkill -x llama-server 2>/dev/null
+  sleep 1
+  [ -f ~/llama.log ] && [ "$(stat -c %s ~/llama.log)" -gt 5000000 ] && : > ~/llama.log
+  MM=""
+  [ -s $HOME/models/qwen2b-mmproj.gguf ] && MM="--mmproj $HOME/models/qwen2b-mmproj.gguf"
+  llama-server -m ~/models/qwen2b.gguf $MM -c 4096 -t 2 -tb 6 -np 1 --port 8080 --jinja --chat-template-kwargs '{"enable_thinking":false}' >> ~/llama.log 2>&1
+  echo "SERVER STOPPED $(date), restarting in 5s" >> ~/llama.log
+  sleep 5
+done
+EOF
+chmod +x ~/gemma.sh
+pkill -f gemma.sh; pkill -x llama-server; rm -f ~/.gemma.pid; sleep 2; nohup ~/gemma.sh > /dev/null 2>&1 &
+sleep 25; curl -s localhost:8080/health
+"""
+
+
+def _vis_request(b64, mime, question, hist=None, timeout=300):
+    # one camera picture + one question -> Qwen on the phone (llama-server must run with --mmproj)
+    msgs = [{"role": "system", "content": VIS_SYS}]
+    for q, a in (hist or [])[-3:]:
+        msgs.append({"role": "user", "content": q})
+        msgs.append({"role": "assistant", "content": a})
+    msgs.append({"role": "user", "content": [
+        {"type": "text", "text": question},
+        {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]})
+    body = {"messages": msgs, "max_tokens": 170, "temperature": 0.3,
+            "chat_template_kwargs": {"enable_thinking": False}}
+    rq = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+                                data=json.dumps(body).encode(),
+                                headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(rq, timeout=timeout) as r:
+        out = json.loads(r.read().decode())["choices"][0]["message"]["content"]
+    return re.sub(r"<think>.*?</think>", "", out or "", flags=re.S).strip()
 
 
 class NeonButton(Button):
@@ -1240,20 +1309,276 @@ class BusinessDashboard(App):
         self.msg_input.bind(on_text_validate=self.on_send)
         pill.add_widget(self.msg_input)
         plus = NeonButton(glow=CYAN, text="+", size_hint=(None, 1),
-                          width=_dp(54), font_size="26sp")
+                          width=_dp(46), font_size="26sp")
         plus.bind(on_press=self.on_attach)
         pill.add_widget(plus)
         mic = NeonButton(glow=GREEN, text="MIC", size_hint=(None, 1),
-                         width=_dp(68), font_size="14sp")
+                         width=_dp(58), font_size="13sp")
         mic.bind(on_press=self.on_mic)
         pill.add_widget(mic)
         send = NeonButton(glow=CYAN, text="SEND", size_hint=(None, 1),
-                          width=_dp(76), font_size="14sp")
+                          width=_dp(64), font_size="13sp")
         send.bind(on_press=self.on_send)
         pill.add_widget(send)
+        eye = NeonButton(glow=AMBER, text="EYE", size_hint=(None, 1),
+                         width=_dp(56), font_size="13sp")
+        eye.bind(on_press=lambda *a: self._vis_open("chat"))
+        pill.add_widget(eye)
         v.add_widget(self._att_make_strip())
         v.add_widget(pill)
         return v
+
+    # ---------- Guided Vision (VISION_V1): live camera, you talk, Qwen looks and answers ----------
+
+    def _vis_open(self, mode="chat"):
+        try:
+            self._vis_mode = mode
+            try:
+                from android.permissions import request_permissions, Permission, check_permission
+                if not check_permission(Permission.CAMERA):
+                    request_permissions([Permission.CAMERA, Permission.RECORD_AUDIO])
+                    self.flash("Allow the camera, then tap EYE again.")
+                    return
+            except ImportError:
+                pass
+            from kivy.uix.camera import Camera
+            from kivy.uix.floatlayout import FloatLayout
+            from kivy.uix.modalview import ModalView
+            from kivy.graphics import PushMatrix, PopMatrix, Rotate
+            self._vis_hist = []
+            self._vis_busy = False
+            self._vis_watch = False
+            self._vis_last = 0
+            self._vis_ang = int(self.cfg.get("vis_rot", 270))
+            mv = ModalView(size_hint=(1, 1), auto_dismiss=False, background_color=(0, 0, 0, 1))
+            root = BoxLayout(orientation="vertical", spacing=6, padding=6)
+            holder = FloatLayout(size_hint=(1, 1))
+            cam = Camera(index=0, resolution=(640, 480), play=True, size_hint=(None, None))
+            with cam.canvas.before:
+                PushMatrix()
+                rot = Rotate(angle=0, axis=(0, 0, 1), origin=(0, 0))
+            with cam.canvas.after:
+                PopMatrix()
+
+            def lay(*a):
+                w, h = holder.size
+                if self._vis_ang % 180:
+                    cam.size = (h, w)
+                else:
+                    cam.size = (w, h)
+                cam.center = holder.center
+                rot.origin = cam.center
+                rot.angle = self._vis_ang
+
+            holder.bind(pos=lay, size=lay)
+            cam.bind(pos=lay)
+            holder.add_widget(cam)
+            root.add_widget(holder)
+            self._vis_lbl = Label(text="Tap TALK and ask about what you see, or tap DESCRIBE.",
+                                  color=TXT, font_size="16sp", size_hint_y=None, height=_dp(120),
+                                  halign="left", valign="top", padding=[8, 4])
+            self._vis_lbl.bind(size=lambda w, sz: setattr(w, "text_size", (sz[0], None)))
+            root.add_widget(self._vis_lbl)
+
+            def row(items):
+                r = BoxLayout(size_hint_y=None, height=_dp(60), spacing=6)
+                for t, cb, g in items:
+                    b = NeonButton(glow=g, text=t, font_size="15sp")
+                    b.bind(on_press=cb)
+                    r.add_widget(b)
+                    if t.startswith("WATCH"):
+                        self._vis_wbtn = b
+                return r
+
+            root.add_widget(row([("TALK", lambda *a: self._vis_talk(), GREEN),
+                                 ("DESCRIBE", lambda *a: self._vis_ask("Describe what you see in the camera.", False), CYAN),
+                                 ("READ TEXT", lambda *a: self._vis_ask("Read out loud every piece of text you can see.", False), AMBER)]))
+            root.add_widget(row([("WATCH: OFF", lambda *a: self._vis_toggle_watch(), MAGENTA),
+                                 ("ROTATE", lambda *a: self._vis_rotate(lay), CYAN),
+                                 ("CLOSE", lambda *a: self._vis_close(), MAGENTA)]))
+            mv.add_widget(root)
+            self._vis_mv, self._vis_cam, self._vis_holder = mv, cam, holder
+            mv.open()
+            Clock.schedule_interval(self._vis_tick, 3)
+            self.speak("Guided vision is on. Tap talk and ask me about what you see.")
+        except Exception as e:
+            self.err("vision open", e)
+            self.flash("Camera could not start: " + str(e)[:80])
+
+    def _vis_rotate(self, lay):
+        self._vis_ang = (self._vis_ang + 90) % 360
+        self.cfg["vis_rot"] = self._vis_ang
+        self.save_settings()
+        lay()
+
+    def _vis_close(self):
+        try:
+            Clock.unschedule(self._vis_tick)
+        except Exception:
+            pass
+        self._vis_watch = False
+        try:
+            self._vis_cam.play = False
+        except Exception:
+            pass
+        try:
+            self._vis_mv.dismiss()
+        except Exception:
+            pass
+        try:
+            if self.tts is not None and self.tts_ok:
+                self.tts.stop()
+        except Exception:
+            pass
+
+    def _vis_say(self, text):
+        try:
+            self._vis_lbl.text = text
+        except Exception:
+            pass
+
+    def _vis_talk(self):
+        if self._vis_busy:
+            self.flash("Still looking. One moment.")
+            return
+        try:
+            if self.tts is not None and self.tts_ok:
+                self.tts.stop()
+        except Exception:
+            pass
+        self.convo_active = False
+        self.voice_target = self._vis_heard
+        self._vis_say("Listening...")
+        self.listen()
+
+    def _vis_heard(self, said):
+        try:
+            self._vis_cam.play = False
+            self._vis_cam.play = True
+        except Exception:
+            pass
+        Clock.schedule_once(lambda dt: self._vis_ask(said, False, show=True), 0.8)
+
+    def _vis_toggle_watch(self):
+        self._vis_watch = not self._vis_watch
+        try:
+            self._vis_wbtn.text = "WATCH: ON" if self._vis_watch else "WATCH: OFF"
+            self._vis_wbtn.set_active(self._vis_watch)
+        except Exception:
+            pass
+        if self._vis_watch:
+            self._vis_last = 0
+            self._vis_say("Watching. I will tell you what I see, then again when something changes.")
+
+    def _vis_tick(self, dt):
+        if getattr(self, "_vis_watch", False) and not getattr(self, "_vis_busy", False) \
+                and time.time() - getattr(self, "_vis_last", 0) > 8:
+            self._vis_ask("Tell me in one short sentence what you see now. If nothing important changed since your last answer, say: Nothing new.", True)
+
+    def _vis_frame(self):
+        # picture of exactly what is on screen, about 480 px on the long side, as base64 JPEG (or PNG)
+        import base64
+        holder = self._vis_holder
+        w, h = holder.size
+        if w < 10 or h < 10 or self._vis_cam.texture is None:
+            return None
+        sc = min(1.0, 480.0 / max(w, h))
+        img = holder.export_as_image(scale=sc)
+        d = os.path.join(self.user_data_dir, "vis_tmp")
+        os.makedirs(d, exist_ok=True)
+        for ext, mime in (("jpg", "image/jpeg"), ("png", "image/png")):
+            p = os.path.join(d, "frame." + ext)
+            try:
+                img.save(p, flipped=True)
+                with open(p, "rb") as f:
+                    raw = f.read()
+                if raw:
+                    return base64.b64encode(raw).decode(), mime
+            except Exception:
+                continue
+        return None
+
+    def _vis_ask(self, question, auto, show=False):
+        if self._vis_busy:
+            if not auto:
+                self.flash("Still looking. One moment.")
+            return
+        fr = None
+        try:
+            fr = self._vis_frame()
+        except Exception as e:
+            self.err("vision frame", e)
+        if not fr:
+            if not auto:
+                self._vis_say("The camera has not shown a picture yet. Wait a second and try again, or tap ROTATE.")
+            return
+        self._vis_busy = True
+        self._vis_say(("You: " + question + "\n" if show else "") + "Looking...")
+        hist = list(self._vis_hist)
+        threading.Thread(target=self._vis_work, args=(fr[0], fr[1], question, hist, auto), daemon=True).start()
+
+    def _vis_work(self, b64, mime, question, hist, auto):
+        out, err = "", ""
+        try:
+            out = _vis_request(b64, mime, question, hist)
+        except Exception as e:
+            err = str(e)[:90]
+        Clock.schedule_once(lambda dt: self._vis_done(question, out, err, auto), 0)
+
+    def _vis_done(self, question, out, err, auto):
+        self._vis_busy = False
+        self._vis_last = time.time()
+        if err or not out:
+            msg = ("I cannot see yet (" + (err or "empty answer") + "). The server needs the vision file: "
+                   "MORE tab, COPY QWEN + VISION SETUP, then paste it in Termux.")
+            self._vis_say(msg)
+            self._vis_watch = False
+            return
+        if auto and out.lower().strip(" .!").startswith("nothing new"):
+            return
+        self._vis_hist.append((question, out))
+        self._vis_hist = self._vis_hist[-3:]
+        self._vis_say(out)
+        self.speak(out)
+        try:
+            if getattr(self, "_vis_mode", "chat") == "proj" and self.cur_proj is not None:
+                self.db.add_plog(self.cur_proj, "you", "[Camera] " + out)
+                self.update_proj_view()
+            else:
+                self.add_msg("[Camera] " + question, True)
+                self.add_msg(out, False)
+                self.db.add_chat("user", "[Camera] " + question)
+                self.db.add_chat("bot", out)
+        except Exception as e:
+            self.err("vision log", e)
+
+    def test_qwen(self, *a):
+        try:
+            self.test_out.text = "Testing Qwen on the phone..."
+        except Exception:
+            pass
+
+        def work():
+            t0 = time.time()
+            try:
+                out = gemma_chat("You are a test.", "Reply with the single word OK", max_tokens=8, timeout=200)
+                msg = "Qwen answered: %s (%.1f s). Server is working." % (out[:40] or "(empty)", time.time() - t0)
+            except Exception as e:
+                msg = "Qwen did NOT answer (" + str(e)[:60] + "). Start the server in Termux: nohup ~/gemma.sh > /dev/null 2>&1 &"
+            Clock.schedule_once(lambda dt: setattr(self.test_out, "text", msg), 0)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def copy_qwen_setup(self, *a):
+        try:
+            from kivy.core.clipboard import Clipboard
+            Clipboard.copy(QWEN_SETUP)
+            self.flash("Copied. Open Termux, paste, press Enter.")
+            self.test_out.text = ("Copied the Termux setup (downloads Qwen 2B + the vision file, writes the "
+                                  "never-stop launcher, starts it). Open Termux, long-press, Paste, Enter.")
+        except Exception as e:
+            self.err("copy setup", e)
+            self.flash("Copy failed")
 
     def chip_go(self, cmd):
         self.convo_active = False
@@ -1461,7 +1786,7 @@ class BusinessDashboard(App):
 
     def build_more(self):
         sv, c = self._scroll()
-        self._head(c, "GEMINI KEY", MAGENTA)
+        self._head(c, "GEMINI KEY (not used now)", MAGENTA)
         self.key_in = mk_input("Paste Gemini key here", password=True)
         self._row(c, self.key_in, "SAVE", self.save_key, MAGENTA)
         self.key_state = autosize(Label(
@@ -1483,7 +1808,8 @@ class BusinessDashboard(App):
         c.add_widget(self.upd_out)
         self._head(c, "SELF TEST", GREEN)
         self._btn(c, "TEST EVERYTHING", self.run_tests_btn, GREEN, 56)
-        self._btn(c, "TEST GEMINI", self.test_gemini, MAGENTA)
+        self._btn(c, "TEST QWEN", self.test_qwen, MAGENTA, 56)
+        self._btn(c, "COPY QWEN + VISION SETUP (Termux)", self.copy_qwen_setup, AMBER, 56)
         self.test_out = autosize(Label(text="Tap TEST EVERYTHING.", color=TXT))
         c.add_widget(self.test_out)
         self._head(c, "GMAIL", CYAN)
@@ -1686,7 +2012,10 @@ class BusinessDashboard(App):
         Clock.schedule_interval(lambda dt: self.update_proj_view(), 3)
         if _v69_bar is not None:
             try:
-                _v69_box = BoxLayout(orientation="vertical")
+                _v69_box = BoxLayout(orientation="vertical", spacing=6)
+                _nb = getattr(self, "_v69_newbtn", None)
+                if _nb is not None:
+                    _v69_box.add_widget(_nb)
                 _v69_box.add_widget(sv)
                 try:
                     _v69_box.add_widget(_v69_bar)
@@ -1795,8 +2124,9 @@ class BusinessDashboard(App):
                 nb.height = 0
             nb.opacity = 1 if o else 0
             nb.disabled = not o
-        top.bind(on_release=self._v72_newproj)
-        c.add_widget(top)
+        top.bind(on_press=self._v72_newproj)
+        top.height = _dp(64)
+        self._v69_newbtn = top  # fixed above the list, not inside the scroll
         c.add_widget(nb)
         self.proj_list = BoxLayout(orientation="vertical", spacing=6, size_hint_y=None)
         self.proj_list.bind(minimum_height=self.proj_list.setter("height"))
@@ -1818,6 +2148,9 @@ class BusinessDashboard(App):
         r1.add_widget(self.proj_note)
         r1.add_widget(mic)
         r1.add_widget(snd)
+        eye = NeonButton(glow=AMBER, text="EYE", size_hint_x=None, width=_dp(60), font_size="16sp")
+        eye.bind(on_press=lambda *a: self._vis_open("proj"))
+        r1.add_widget(eye)
         r2 = self._v68_row([("RUN", self.auto_start, GREEN),
                             ("PAUSE", lambda *a: self.auto_stop("Paused."), AMBER),
                             ("CLAUDE", lambda *a: self.proj_to_app("claude"), CYAN),
@@ -2452,7 +2785,7 @@ class BusinessDashboard(App):
             return
         if code != 200:
             self.err("auto " + str(code), raw[:150])
-            self.auto_stop("Gemini error " + str(code) + ": " + gem_msg(raw) + " Paused.")
+            self.auto_stop("Qwen error " + str(code) + ": " + gem_msg(raw) + " Paused.")
             return
         self.auto_fail = 0
         self.auto_note = ""
@@ -3932,7 +4265,7 @@ class BusinessDashboard(App):
            "" if os.path.exists(self.key_path) else "type: setkey YOUR_KEY")
         self.notify("Pocket Pal test", "If you see this, notifications work.")
         out.append("INFO notification sent - check your notification shade")
-        out.append("MANUAL tap each PHONE button, then TEST GEMINI")
+        out.append("MANUAL tap each PHONE button, then TEST QWEN")
         return "\n".join(out)
 
     def run_tests_btn(self, *a):
@@ -6429,7 +6762,7 @@ class BusinessDashboard(App):
     def on_gemini(self, code, raw, err):
         if err:
             self.err("gemini net", err)
-            self.reply("I could not reach Gemini. Check your connection.")
+            self.reply("I could not reach Qwen. Is the server running in Termux?")
             return
         if code == 429:
             self.gem_mark_down()
@@ -6437,7 +6770,7 @@ class BusinessDashboard(App):
             return
         if code != 200:
             self.err("gemini " + str(code), raw[:150])
-            self.reply("Gemini error " + str(code) + ": " + gem_msg(raw))
+            self.reply("Qwen error " + str(code) + ": " + gem_msg(raw))
             return
         try:
             txt = json.loads(raw)["candidates"][0]["content"]["parts"][0]["text"].strip()
