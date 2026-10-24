@@ -4480,8 +4480,13 @@ class BusinessDashboard(App):
             self.err("tts init", e)
 
     def speak(self, text):
+        self._v74_think = False
+        self._v74_spoke_t = time.time()
+        self._v74_said = (text or "")[:700].lower()
         if not (self.cfg.get("talk") and self.tts_ok and self.tts is not None):
             return
+        if getattr(self, "_v74_on", False):
+            self._v74_halt()
         try:
             from jnius import autoclass
             TTS = autoclass("android.speech.tts.TextToSpeech")
@@ -6090,7 +6095,7 @@ class BusinessDashboard(App):
         except Exception as e:
             return "error: " + str(e)
 
-    # V74_VOICE: continuous hands-free listening with a floating orb
+    # V74_VOICE V74_PUMP: one turn at a time, mic off while thinking and speaking
     def listen(self):
         try:
             from android.permissions import request_permissions, Permission, check_permission
@@ -6102,15 +6107,63 @@ class BusinessDashboard(App):
             pass
         self._v74_on = True
         self._v74_err = 0
-        self.convo_active = not getattr(self, "_v74_vis", False)
+        self._v74_fail = 0
+        self._v74_think = False
+        self._v74_think_t = 0
+        self._v74_listening = False
+        self._v74_hear = False
+        self._v74_spoke_t = time.time() - 5
+        self._v74_next = 0
+        self._v74_said = ""
+        self.convo_active = False
         try:
             self._v74_orb_show()
-            self._v74_begin()
+            Clock.unschedule(self._v74_pump)
+            Clock.schedule_interval(self._v74_pump, 0.4)
         except Exception as e:
             self._v74_on = False
             self._v74_orb_hide()
             self.err("voice start", e)
             self._listen_dialog()
+
+    def _v74_pump(self, dt):
+        if not getattr(self, "_v74_on", False):
+            return False
+        now = time.time()
+        speaking = False
+        try:
+            speaking = bool(self.tts is not None and self.tts_ok and self.tts.isSpeaking())
+        except Exception:
+            speaking = False
+        if speaking:
+            self._v74_spoke_t = now
+            self._v74_think = False
+            if self._v74_listening:
+                self._v74_halt()
+            return
+        if self._v74_think:
+            lim = 90 if self.cfg.get("talk") else 8
+            vis_idle = (getattr(self, "_v74_vis", False) and not getattr(self, "_vis_busy", False)
+                        and now - self._v74_think_t > 4)
+            if now - self._v74_think_t < lim and not vis_idle:
+                return
+            self._v74_think = False
+        if self._v74_listening:
+            if now - getattr(self, "_v74_begin_t", now) > 25:
+                self._v74_halt()
+            return
+        if now - self._v74_spoke_t < 1.2 or now < self._v74_next:
+            return
+        try:
+            self._v74_begin()
+        except Exception as e:
+            self._v74_listening = False
+            self._v74_next = now + 2.0
+            self._v74_fail = getattr(self, "_v74_fail", 0) + 1
+            self.err("voice begin", e)
+            if self._v74_fail >= 3:
+                self._v74_stop()
+                self._listen_dialog()
 
     def _v74_begin(self):
         from jnius import autoclass, PythonJavaClass, java_method
@@ -6150,12 +6203,14 @@ class BusinessDashboard(App):
                 @java_method("(I)V")
                 def onError(self, code):
                     app._v74_hear = False
+                    app._v74_listening = False
                     c = int(code)
                     Clock.schedule_once(lambda dt: app._v74_error(c), 0)
 
                 @java_method("(Landroid/os/Bundle;)V")
                 def onResults(self, b):
                     app._v74_hear = False
+                    app._v74_listening = False
                     try:
                         said = str(b.getStringArrayList(SR.RESULTS_RECOGNITION).get(0)).strip()
                     except Exception:
@@ -6172,6 +6227,8 @@ class BusinessDashboard(App):
 
             self._v74_lis = Lis()
         lis = self._v74_lis
+        self._v74_listening = True
+        self._v74_begin_t = time.time()
 
         @run_on_ui_thread
         def go():
@@ -6190,9 +6247,35 @@ class BusinessDashboard(App):
                 sr.startListening(it)
             except Exception as e:
                 msg = str(e)
+                app._v74_listening = False
                 Clock.schedule_once(lambda dt: app.err("voice go", msg), 0)
 
         go()
+
+    def _v74_halt(self):
+        self._v74_listening = False
+        self._v74_hear = False
+        sr = getattr(self, "_v74_sr", None)
+        self._v74_sr = None
+        if sr is None:
+            return
+        try:
+            from android.runnable import run_on_ui_thread
+
+            @run_on_ui_thread
+            def kill():
+                try:
+                    sr.cancel()
+                except Exception:
+                    pass
+                try:
+                    sr.destroy()
+                except Exception:
+                    pass
+
+            kill()
+        except Exception:
+            pass
 
     def _v74_error(self, code):
         if not getattr(self, "_v74_on", False):
@@ -6203,91 +6286,59 @@ class BusinessDashboard(App):
             return
         self._v74_err = getattr(self, "_v74_err", 0) + 1
         quiet = code in (6, 7)
-        if self._v74_err > (40 if quiet else 6):
+        if self._v74_err > (60 if quiet else 6):
             self._v74_stop()
             self.flash("Voice stopped. Tap MIC to start again.")
             return
-        Clock.schedule_once(lambda dt: self._v74_again(), 0.6 if quiet else 1.5)
-
-    def _v74_again(self):
-        if not getattr(self, "_v74_on", False):
-            return
-        try:
-            self._v74_begin()
-        except Exception as e:
-            self.err("voice again", e)
+        self._v74_next = time.time() + (0.5 if quiet else 1.5)
 
     def _v74_result(self, said):
         if not getattr(self, "_v74_on", False):
             return
-        if not said:
-            self._v74_again()
+        self._v74_halt()
+        low = (said or "").lower().strip(" .!?")
+        if not low:
+            self._v74_next = time.time() + 0.3
             return
-        self._v74_err = 0
-        if said.lower().strip(" .!") in ("stop listening", "stop voice", "goodbye"):
+        if low in ("stop listening", "stop voice", "goodbye"):
             self._v74_stop()
             return
+        echo = getattr(self, "_v74_said", "")
+        if echo and len(low) > 3 and low in echo and time.time() - getattr(self, "_v74_spoke_t", 0) < 6:
+            self._v74_next = time.time() + 0.5
+            return
+        self._v74_err = 0
+        self._v74_think = True
+        self._v74_think_t = time.time()
         vis = getattr(self, "_v74_vis", False)
         cb = self.voice_target
         self.voice_target = None
         if vis:
             cb = self._vis_heard
-            Clock.schedule_once(lambda dt: self._v74_wd(), 3)
         if cb is not None:
             cb(said)
         else:
             self.handle(said, True)
 
+    def _v74_again(self):
+        pass
+
     def _v74_wd(self):
-        if not (getattr(self, "_v74_on", False) and getattr(self, "_v74_vis", False)):
-            return
-        if getattr(self, "_vis_busy", False) or getattr(self, "_v74_hear", False):
-            return
-        try:
-            if self.tts is not None and self.tts_ok and self.tts.isSpeaking():
-                return
-        except Exception:
-            pass
-        self._v74_again()
+        pass
 
     def _v74_vis_resume(self, tries):
-        if not (getattr(self, "_v74_on", False) and getattr(self, "_v74_vis", False)):
-            return
-        speaking = False
-        try:
-            speaking = bool(self.tts is not None and self.tts_ok and self.tts.isSpeaking())
-        except Exception:
-            speaking = False
-        if speaking and tries < 120:
-            Clock.schedule_once(lambda dt: self._v74_vis_resume(tries + 1), 0.5)
-            return
-        Clock.schedule_once(lambda dt: self._v74_again(), 0.4)
+        pass
 
     def _v74_stop(self, *a):
         self._v74_on = False
         self._v74_vis = False
-        self._v74_hear = False
+        self._v74_think = False
         self.convo_active = False
-        sr = getattr(self, "_v74_sr", None)
-        self._v74_sr = None
-        if sr is not None:
-            try:
-                from android.runnable import run_on_ui_thread
-
-                @run_on_ui_thread
-                def kill():
-                    try:
-                        sr.cancel()
-                    except Exception:
-                        pass
-                    try:
-                        sr.destroy()
-                    except Exception:
-                        pass
-
-                kill()
-            except Exception:
-                pass
+        try:
+            Clock.unschedule(self._v74_pump)
+        except Exception:
+            pass
+        self._v74_halt()
         try:
             if self.tts is not None and self.tts_ok:
                 self.tts.stop()
