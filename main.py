@@ -1353,7 +1353,13 @@ class BusinessDashboard(App):
             mv = ModalView(size_hint=(1, 1), auto_dismiss=False, background_color=(0, 0, 0, 1))
             root = BoxLayout(orientation="vertical", spacing=6, padding=6)
             holder = FloatLayout(size_hint=(1, 1))
-            cam = Camera(index=0, resolution=(640, 480), play=True, size_hint=(None, None))
+            cam = Camera(index=int(self.cfg.get("vis_cam", 0)), resolution=(640, 480), play=True, size_hint=(None, None))
+            try:
+                cam.allow_stretch = True
+                cam.keep_ratio = True
+                cam.fit_mode = "contain"
+            except Exception:
+                pass
             with cam.canvas.before:
                 PushMatrix()
                 rot = Rotate(angle=0, axis=(0, 0, 1), origin=(0, 0))
@@ -1395,15 +1401,30 @@ class BusinessDashboard(App):
                                  ("READ TEXT", lambda *a: self._vis_ask("Read out loud every piece of text you can see.", False), AMBER)]))
             root.add_widget(row([("WATCH: OFF", lambda *a: self._vis_toggle_watch(), MAGENTA),
                                  ("ROTATE", lambda *a: self._vis_rotate(lay), CYAN),
-                                 ("CLOSE", lambda *a: self._vis_close(), MAGENTA)]))
+                                 ("CLOSE", lambda *a: (self._v74_stop(), self._vis_close()), MAGENTA)]))
+            root.add_widget(row([("FLIP CAMERA", lambda *a: self._vis_flip(), AMBER)]))
             mv.add_widget(root)
             self._vis_mv, self._vis_cam, self._vis_holder = mv, cam, holder
             mv.open()
+            if getattr(self, "_v74_on", False):
+                self._v74_orb_show()
             Clock.schedule_interval(self._vis_tick, 3)
-            self.speak("Guided vision is on. Tap talk and ask me about what you see.")
+            if not getattr(self, "_v74_flip", False):
+                self.speak("Guided vision is on. Tap talk and ask me about what you see.")
+            self._v74_flip = False
         except Exception as e:
             self.err("vision open", e)
             self.flash("Camera could not start: " + str(e)[:80])
+
+    def _vis_flip(self):
+        try:
+            self.cfg["vis_cam"] = 0 if int(self.cfg.get("vis_cam", 0)) else 1
+            self.save_settings()
+            self._v74_flip = True
+            self._vis_close()
+            Clock.schedule_once(lambda dt: self._vis_open(getattr(self, "_vis_mode", "chat")), 0.7)
+        except Exception as e:
+            self.err("vision flip", e)
 
     def _vis_rotate(self, lay):
         self._vis_ang = (self._vis_ang + 90) % 360
@@ -1446,9 +1467,13 @@ class BusinessDashboard(App):
                 self.tts.stop()
         except Exception:
             pass
-        self.convo_active = False
-        self.voice_target = self._vis_heard
-        self._vis_say("Listening...")
+        if getattr(self, "_v74_on", False) and getattr(self, "_v74_vis", False):
+            self._v74_stop()
+            self._vis_say("Voice stopped. Tap TALK to start again.")
+            return
+        self._v74_vis = True
+        self.voice_target = None
+        self._vis_say("Listening. Just keep talking.")
         self.listen()
 
     def _vis_heard(self, said):
@@ -1540,6 +1565,7 @@ class BusinessDashboard(App):
         self._vis_hist = self._vis_hist[-3:]
         self._vis_say(out)
         self.speak(out)
+        self._v74_vis_resume(0)
         try:
             if getattr(self, "_vis_mode", "chat") == "proj" and self.cur_proj is not None:
                 self.db.add_plog(self.cur_proj, "you", "[Camera] " + out)
@@ -6064,7 +6090,281 @@ class BusinessDashboard(App):
         except Exception as e:
             return "error: " + str(e)
 
+    # V74_VOICE: continuous hands-free listening with a floating orb
     def listen(self):
+        try:
+            from android.permissions import request_permissions, Permission, check_permission
+            if not check_permission(Permission.RECORD_AUDIO):
+                request_permissions([Permission.RECORD_AUDIO])
+                self.flash("Allow the microphone, then tap again.")
+                return
+        except ImportError:
+            pass
+        self._v74_on = True
+        self._v74_err = 0
+        self.convo_active = not getattr(self, "_v74_vis", False)
+        try:
+            self._v74_orb_show()
+            self._v74_begin()
+        except Exception as e:
+            self._v74_on = False
+            self._v74_orb_hide()
+            self.err("voice start", e)
+            self._listen_dialog()
+
+    def _v74_begin(self):
+        from jnius import autoclass, PythonJavaClass, java_method
+        from android.runnable import run_on_ui_thread
+        app = self
+        PA = autoclass("org.kivy.android.PythonActivity")
+        SR = autoclass("android.speech.SpeechRecognizer")
+        RI = autoclass("android.speech.RecognizerIntent")
+        Intent = autoclass("android.content.Intent")
+        if not SR.isRecognitionAvailable(PA.mActivity):
+            raise RuntimeError("speech recognizer not available")
+        if getattr(self, "_v74_lis", None) is None:
+            class Lis(PythonJavaClass):
+                __javainterfaces__ = ["android/speech/RecognitionListener"]
+                __javacontext__ = "app"
+
+                @java_method("(Landroid/os/Bundle;)V")
+                def onReadyForSpeech(self, b):
+                    app._v74_hear = True
+
+                @java_method("()V")
+                def onBeginningOfSpeech(self):
+                    app._v74_err = 0
+
+                @java_method("(F)V")
+                def onRmsChanged(self, v):
+                    app._v74_lvl = float(v)
+
+                @java_method("([B)V")
+                def onBufferReceived(self, b):
+                    pass
+
+                @java_method("()V")
+                def onEndOfSpeech(self):
+                    app._v74_hear = False
+
+                @java_method("(I)V")
+                def onError(self, code):
+                    app._v74_hear = False
+                    c = int(code)
+                    Clock.schedule_once(lambda dt: app._v74_error(c), 0)
+
+                @java_method("(Landroid/os/Bundle;)V")
+                def onResults(self, b):
+                    app._v74_hear = False
+                    try:
+                        said = str(b.getStringArrayList(SR.RESULTS_RECOGNITION).get(0)).strip()
+                    except Exception:
+                        said = ""
+                    Clock.schedule_once(lambda dt: app._v74_result(said), 0)
+
+                @java_method("(Landroid/os/Bundle;)V")
+                def onPartialResults(self, b):
+                    pass
+
+                @java_method("(ILandroid/os/Bundle;)V")
+                def onEvent(self, t, b):
+                    pass
+
+            self._v74_lis = Lis()
+        lis = self._v74_lis
+
+        @run_on_ui_thread
+        def go():
+            try:
+                old = getattr(app, "_v74_sr", None)
+                if old is not None:
+                    try:
+                        old.destroy()
+                    except Exception:
+                        pass
+                sr = SR.createSpeechRecognizer(PA.mActivity)
+                sr.setRecognitionListener(lis)
+                it = Intent(RI.ACTION_RECOGNIZE_SPEECH)
+                it.putExtra(RI.EXTRA_LANGUAGE_MODEL, RI.LANGUAGE_MODEL_FREE_FORM)
+                app._v74_sr = sr
+                sr.startListening(it)
+            except Exception as e:
+                msg = str(e)
+                Clock.schedule_once(lambda dt: app.err("voice go", msg), 0)
+
+        go()
+
+    def _v74_error(self, code):
+        if not getattr(self, "_v74_on", False):
+            return
+        if code == 9:
+            self._v74_stop()
+            self.flash("Microphone permission is off. Allow it in Android Settings.")
+            return
+        self._v74_err = getattr(self, "_v74_err", 0) + 1
+        quiet = code in (6, 7)
+        if self._v74_err > (40 if quiet else 6):
+            self._v74_stop()
+            self.flash("Voice stopped. Tap MIC to start again.")
+            return
+        Clock.schedule_once(lambda dt: self._v74_again(), 0.6 if quiet else 1.5)
+
+    def _v74_again(self):
+        if not getattr(self, "_v74_on", False):
+            return
+        try:
+            self._v74_begin()
+        except Exception as e:
+            self.err("voice again", e)
+
+    def _v74_result(self, said):
+        if not getattr(self, "_v74_on", False):
+            return
+        if not said:
+            self._v74_again()
+            return
+        self._v74_err = 0
+        if said.lower().strip(" .!") in ("stop listening", "stop voice", "goodbye"):
+            self._v74_stop()
+            return
+        vis = getattr(self, "_v74_vis", False)
+        cb = self.voice_target
+        self.voice_target = None
+        if vis:
+            cb = self._vis_heard
+            Clock.schedule_once(lambda dt: self._v74_wd(), 3)
+        if cb is not None:
+            cb(said)
+        else:
+            self.handle(said, True)
+
+    def _v74_wd(self):
+        if not (getattr(self, "_v74_on", False) and getattr(self, "_v74_vis", False)):
+            return
+        if getattr(self, "_vis_busy", False) or getattr(self, "_v74_hear", False):
+            return
+        try:
+            if self.tts is not None and self.tts_ok and self.tts.isSpeaking():
+                return
+        except Exception:
+            pass
+        self._v74_again()
+
+    def _v74_vis_resume(self, tries):
+        if not (getattr(self, "_v74_on", False) and getattr(self, "_v74_vis", False)):
+            return
+        speaking = False
+        try:
+            speaking = bool(self.tts is not None and self.tts_ok and self.tts.isSpeaking())
+        except Exception:
+            speaking = False
+        if speaking and tries < 120:
+            Clock.schedule_once(lambda dt: self._v74_vis_resume(tries + 1), 0.5)
+            return
+        Clock.schedule_once(lambda dt: self._v74_again(), 0.4)
+
+    def _v74_stop(self, *a):
+        self._v74_on = False
+        self._v74_vis = False
+        self._v74_hear = False
+        self.convo_active = False
+        sr = getattr(self, "_v74_sr", None)
+        self._v74_sr = None
+        if sr is not None:
+            try:
+                from android.runnable import run_on_ui_thread
+
+                @run_on_ui_thread
+                def kill():
+                    try:
+                        sr.cancel()
+                    except Exception:
+                        pass
+                    try:
+                        sr.destroy()
+                    except Exception:
+                        pass
+
+                kill()
+            except Exception:
+                pass
+        try:
+            if self.tts is not None and self.tts_ok:
+                self.tts.stop()
+        except Exception:
+            pass
+        self._v74_orb_hide()
+
+    def _v74_orb_show(self):
+        from kivy.core.window import Window
+        from kivy.uix.widget import Widget
+        from kivy.graphics import Color, Ellipse
+        app = self
+        if getattr(self, "_v74_orb", None) is None:
+            S = _dp(110)
+
+            class Orb(Widget):
+                def on_touch_down(self, t):
+                    if self.collide_point(*t.pos):
+                        app._v74_stop()
+                        return True
+                    return False
+
+            o = Orb(size_hint=(None, None), size=(S, S))
+            with o.canvas:
+                o._col = Color(0.5, 0.5, 0.5, 0.9)
+                o._el = Ellipse(pos=o.pos, size=(S * 0.5, S * 0.5))
+            self._v74_orb = o
+        o = self._v74_orb
+        try:
+            Window.remove_widget(o)
+        except Exception:
+            pass
+        o.pos = ((Window.width - o.width) / 2.0, _dp(150))
+        Window.add_widget(o)
+        Clock.unschedule(self._v74_anim)
+        Clock.schedule_interval(self._v74_anim, 1 / 20.0)
+
+    def _v74_orb_hide(self):
+        try:
+            Clock.unschedule(self._v74_anim)
+        except Exception:
+            pass
+        o = getattr(self, "_v74_orb", None)
+        if o is not None:
+            try:
+                from kivy.core.window import Window
+                Window.remove_widget(o)
+            except Exception:
+                pass
+
+    def _v74_anim(self, dt):
+        o = getattr(self, "_v74_orb", None)
+        if o is None:
+            return
+        m = __import__("math")
+        lv = max(0.0, min(1.0, (getattr(self, "_v74_lvl", 0.0) + 2.0) / 12.0))
+        self._v74_sm = getattr(self, "_v74_sm", 0.0) * 0.6 + lv * 0.4
+        speaking = False
+        try:
+            speaking = bool(self.tts is not None and self.tts_ok and self.tts.isSpeaking())
+        except Exception:
+            speaking = False
+        if not getattr(self, "_v74_on", False):
+            col, lvl = (0.5, 0.5, 0.5, 0.9), 0.1
+        elif speaking:
+            col, lvl = (0.2, 1.0, 0.4, 0.95), 0.5 + 0.25 * m.sin(time.time() * 6)
+        elif getattr(self, "_v74_hear", False):
+            col, lvl = (0.25, 0.55, 1.0, 0.95), self._v74_sm
+        else:
+            col, lvl = (1.0, 0.85, 0.15, 0.95), 0.2 + 0.1 * m.sin(time.time() * 3)
+        S = o.width
+        d = S * (0.4 + 0.55 * lvl)
+        o._col.rgba = col
+        o._el.size = (d, d)
+        o._el.pos = (o.x + (S - d) / 2.0, o.y + (S - d) / 2.0)
+
+    def _listen_dialog(self):
         try:
             from jnius import autoclass
             from android import activity
