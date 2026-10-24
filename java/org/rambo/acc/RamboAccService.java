@@ -286,6 +286,58 @@ public class RamboAccService extends AccessibilityService {
         }
     }
 
+    private static final java.util.concurrent.Executor SHOT_EXEC = java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    // V78_SHOT: real screenshot as base64 JPEG (Android 11+). Call from a background thread.
+    public static String shotB64(final int maxPx) {
+        final RamboAccService s = inst;
+        if (s == null) {
+            return "ERR:accessibility service is off";
+        }
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            return "ERR:needs Android 11 or newer";
+        }
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        final String[] out = new String[]{"ERR:timeout"};
+        try {
+            s.takeScreenshot(android.view.Display.DEFAULT_DISPLAY, SHOT_EXEC,
+                new AccessibilityService.TakeScreenshotCallback() {
+                    @Override
+                    public void onSuccess(AccessibilityService.ScreenshotResult r) {
+                        try {
+                            android.hardware.HardwareBuffer hb = r.getHardwareBuffer();
+                            android.graphics.Bitmap hw = android.graphics.Bitmap.wrapHardwareBuffer(hb, r.getColorSpace());
+                            android.graphics.Bitmap sw = hw.copy(android.graphics.Bitmap.Config.ARGB_8888, false);
+                            hb.close();
+                            int w = sw.getWidth();
+                            int h = sw.getHeight();
+                            float k = Math.min(1.0f, (float) maxPx / (float) Math.max(w, h));
+                            android.graphics.Bitmap sm = sw;
+                            if (k < 1.0f) {
+                                sm = android.graphics.Bitmap.createScaledBitmap(sw, Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k)), true);
+                            }
+                            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                            sm.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, bo);
+                            out[0] = android.util.Base64.encodeToString(bo.toByteArray(), android.util.Base64.NO_WRAP);
+                        } catch (Throwable t) {
+                            out[0] = "ERR:" + t;
+                        }
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onFailure(int code) {
+                        out[0] = "ERR:screenshot code " + code;
+                        latch.countDown();
+                    }
+                });
+            latch.await(8, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            return "ERR:" + t;
+        }
+        return out[0];
+    }
+
     public static boolean tap(int x, int y) {
         RamboAccService s = inst;
         if (s == null) {
