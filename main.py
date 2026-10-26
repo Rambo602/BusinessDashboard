@@ -401,7 +401,32 @@ def web_read(url, limit=3500):
     return ((_clean(title.group(1)) + ". ") if title else "") + body[:limit]
 
 
-def gemma_chat(system, user, max_tokens=300, want_json=False, timeout=400):
+_V77C = {}
+
+
+GODOT_KB78 = 'PROJECT: /sdcard/mmorpg_game, Godot 4.7.2, gl_compatibility renderer. Old game: main.gd data.gd hud.gd fx.gd actor.gd retarget.gd gait.gd. New map: realm2/ (map1.gd player.gd npc.gd ui.gd util.gd proj.gd fx.gd map1.tscn). Models live under assets/models/dl/. GDSCRIPT RULES: indent with TABS only; Godot 4 syntax (func _ready(), signal.connect(callable), @export); no one-line if inside lambdas; use untyped var when the value comes from Node3D.new() followed by custom calls. EDITING: to change an existing script use grep_search to find the spot, read_file, then replace_in_file with a short unique old text; do not rewrite whole files. Scenes (.tscn) are text: add_node and set_property edit them. ANDROID EDITOR: touch-first, run with Run Current Scene; the editor may ask to reload files changed outside it. Real shortcut list: Editor Settings > Shortcuts inside Godot. Never say something worked unless a tool result says ok.'
+
+
+def _v77_port(role="work"):
+    # talk -> Gemma on 8081 when it answers, otherwise Qwen on 8080
+    import time as _t
+    if role == "talk":
+        c = _V77C.get("g")
+        now = _t.time()
+        if not c or now - c[0] > 30:
+            try:
+                urllib.request.urlopen("http://127.0.0.1:8081/health", timeout=0.7).read()
+                res = True
+            except Exception:
+                res = False
+            _V77C["g"] = (now, res)
+            c = _V77C["g"]
+        if c[1]:
+            return "http://127.0.0.1:8081/v1/chat/completions"
+    return "http://127.0.0.1:8080/v1/chat/completions"
+
+
+def gemma_chat(system, user, max_tokens=300, want_json=False, timeout=400, role="work"):
     # on-device Gemma through llama-server in Termux
     body = {"messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
@@ -409,7 +434,7 @@ def gemma_chat(system, user, max_tokens=300, want_json=False, timeout=400):
             "chat_template_kwargs": {"enable_thinking": False}}
     if want_json:
         body["response_format"] = {"type": "json_object"}
-    rq = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+    rq = urllib.request.Request(_v77_port(role),
                                 data=json.dumps(body).encode(),
                                 headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(rq, timeout=timeout) as r:
@@ -1331,6 +1356,8 @@ class BusinessDashboard(App):
     # ---------- Guided Vision (VISION_V1): live camera, you talk, Qwen looks and answers ----------
 
     def _vis_open(self, mode="chat"):
+        if not getattr(self, "_v77_local_eye", False):
+            return self._v77_open_gemini()
         try:
             self._vis_mode = mode
             try:
@@ -1861,9 +1888,14 @@ class BusinessDashboard(App):
 
     def build_more(self):
         sv, c = self._scroll()
-        self._head(c, "GEMINI KEY (not used now)", MAGENTA)
+        self._head(c, "GEMINI KEY (game NPC talk)", MAGENTA)
         self.key_in = mk_input("Paste Gemini key here", password=True)
         self._row(c, self.key_in, "SAVE", self.save_key, MAGENTA)
+        self._head(c, "GAME + SERVERS", CYAN)
+        self._row(c, autosize(Label(text="Link Rambo to Godot (needs godot_mcp.py running in Termux)")), "CONNECT GODOT", lambda *a: self.handle("godot connect", False), CYAN)
+        self._row(c, autosize(Label(text="Godot project status")), "GODOT STATUS", lambda *a: self.handle("godot status", False), CYAN)
+        self._row(c, autosize(Label(text="Restart the on-phone Qwen server")), "RESTART QWEN", lambda *a: self._v77_qrestart(), AMBER)
+        self._row(c, autosize(Label(text="Open the on-phone camera (the old EYE)")), "LOCAL EYE", lambda *a: self._v77_local_eye_open(), AMBER)
         self.key_state = autosize(Label(
             text="Key: SAVED" if os.path.exists(self.key_path) else "Key: NOT saved yet",
             color=TXT))
@@ -6505,6 +6537,246 @@ class BusinessDashboard(App):
 
     # ---------- brain: local first, Gemini second ----------
 
+    # ---------- v77: Godot link, Qwen restart, EYE -> Gemini ----------
+    def _v77_say(self, s):
+        Clock.schedule_once(lambda dt, s=s: self.reply(s), 0)
+
+    def _v77_flash(self, s):
+        Clock.schedule_once(lambda dt, s=s: self.flash(s), 0)
+
+    def _v77_exec(self, cmd, wait=15):
+        try:
+            tp = os.path.join(self.user_data_dir, "exec.token")
+            tok = open(tp).read().strip() if os.path.exists(tp) else ""
+            if not tok:
+                return ""
+            rq = urllib.request.Request("http://127.0.0.1:8765/run", data=cmd.encode("utf-8"),
+                                        headers={"X-Token": tok}, method="POST")
+            with urllib.request.urlopen(rq, timeout=wait + 10) as r:
+                return r.read().decode("utf-8", "replace")
+        except Exception:
+            return ""
+
+    def _v77_gtoken(self):
+        try:
+            tp = os.path.join(self.user_data_dir, "godot.token")
+            if os.path.exists(tp):
+                return open(tp).read().strip()
+        except Exception:
+            pass
+        return ""
+
+    def _v77_gcall(self, name, args=None, timeout=25):
+        r = self._v77_gcall_raw(name, args, timeout)
+        if not r.get("ok") and "not reachable" in str(r.get("error", "")):
+            self._v77_exec("pgrep -f '[g]odot_mcp[.]py' >/dev/null || (nohup python ~/godot_mcp.py > ~/godot_mcp.log 2>&1 &)", 8)
+            import time as _t78
+            _t78.sleep(3)
+            r = self._v77_gcall_raw(name, args, timeout)
+        return r
+
+    def _v77_gcall_raw(self, name, args=None, timeout=25):
+        tok = self._v77_gtoken()
+        if not tok:
+            return {"ok": False, "error": "not linked yet. Type: godot connect"}
+        rq = urllib.request.Request("http://127.0.0.1:8766/tool",
+                                    data=json.dumps({"name": name, "args": args or {}}).encode("utf-8"),
+                                    headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"},
+                                    method="POST")
+        try:
+            with urllib.request.urlopen(rq, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            return {"ok": False, "error": "Godot tool server not reachable (" + str(e)[:70] + "). In Termux run: nohup python ~/godot_mcp.py > ~/godot_mcp.log 2>&1 &"}
+
+    def _v77_godot(self, text):
+        arg = text[5:].strip().lstrip(":").strip()
+        sub = arg.lower()
+        if sub in ("", "help"):
+            self.reply("Godot link commands:\n"
+                       "godot connect - link using the token in Termux\n"
+                       "godot status - project name, main scene, file counts\n"
+                       "godot ls [folder] - list scripts and scenes\n"
+                       "godot read PATH - show a script or scene\n"
+                       "godot do <what you want> - Qwen edits the project with the tools (backups kept)\n"
+                       "godot grep TEXT - search the project files\n"
+                       "godot tree [folder] - folder overview\n"
+                       "godot undo PATH - restore the last backup of a file\n"
+                       "godot token TOKEN - paste a token by hand")
+            return
+        if sub.startswith("token "):
+            t = arg.split(None, 1)[1].strip()
+            try:
+                with open(os.path.join(self.user_data_dir, "godot.token"), "w") as f:
+                    f.write(t)
+                self.reply("Godot token saved. Type: godot status")
+            except Exception as e:
+                self.reply("Could not save the token: " + str(e)[:100])
+            return
+        if sub == "connect":
+            def w():
+                out = self._v77_exec("cat ~/.rambo_godot_token")
+                m = re.search(r"\b[0-9a-fA-F]{32,64}\b", out or "")
+                if not m:
+                    self._v77_say("I could not read the token through the Termux link. In Termux run: cat ~/.rambo_godot_token  then type here: godot token PASTE")
+                    return
+                try:
+                    with open(os.path.join(self.user_data_dir, "godot.token"), "w") as f:
+                        f.write(m.group(0))
+                except Exception as e:
+                    self._v77_say("Could not save the token: " + str(e)[:100])
+                    return
+                r = self._v77_gcall("project_info")
+                if r.get("ok"):
+                    self._v77_say("Linked to Godot: " + str((r.get("result") or {}).get("config/name", "project")))
+                else:
+                    self._v77_say("Token saved, but: " + str(r.get("error"))[:200])
+            threading.Thread(target=w, daemon=True).start()
+            return
+        if sub == "status":
+            def w():
+                r = self._v77_gcall("project_info")
+                relay = ""
+                try:
+                    j = json.loads(urllib.request.urlopen("http://127.0.0.1:8767/", timeout=2).read().decode())
+                    relay = "\nNPC relay: running, Gemini key %s" % ("set" if j.get("has_key") else "NOT set")
+                except Exception:
+                    relay = "\nNPC relay: not running (game NPCs use the local model)"
+                if r.get("ok"):
+                    res = r.get("result") or {}
+                    self._v77_say("Godot: %s | main scene %s | %s files%s" % (
+                        res.get("config/name", "?"), res.get("run/main_scene", "?"),
+                        sum((res.get("file_counts") or {}).values()), relay))
+                else:
+                    self._v77_say("Godot: " + str(r.get("error"))[:240] + relay)
+            threading.Thread(target=w, daemon=True).start()
+            return
+        if sub.startswith("grep "):
+            q78 = arg[5:].strip()
+            def w():
+                r = self._v77_gcall("grep_search", {"query": q78, "limit": 25})
+                self._v77_say(json.dumps(r.get("result", r.get("error")))[:1600])
+            threading.Thread(target=w, daemon=True).start()
+            return
+        if sub.startswith("undo "):
+            u78 = arg[5:].strip()
+            def w():
+                r = self._v77_gcall("restore_backup", {"path": u78})
+                self._v77_say(json.dumps(r.get("result", r.get("error")))[:600])
+            threading.Thread(target=w, daemon=True).start()
+            return
+        if sub == "tree" or sub.startswith("tree "):
+            t78 = arg[4:].strip()
+            def w():
+                r = self._v77_gcall("tree", {"dir": t78, "depth": 2})
+                self._v77_say(json.dumps(r.get("result", r.get("error")))[:1600])
+            threading.Thread(target=w, daemon=True).start()
+            return
+        if sub.startswith("ls"):
+            d = arg[2:].strip()
+            def w():
+                r = self._v77_gcall("list_files", {"dir": d, "ext": [".gd", ".tscn"], "limit": 60})
+                self._v77_say(json.dumps(r.get("result", r.get("error")))[:1400])
+            threading.Thread(target=w, daemon=True).start()
+            return
+        if sub.startswith("read "):
+            p = arg[5:].strip()
+            def w():
+                r = self._v77_gcall("read_file", {"path": p, "chars": 1800})
+                res = r.get("result")
+                if isinstance(res, dict) and "content" in res:
+                    res = res["content"]
+                self._v77_say(str(res if r.get("ok") else r.get("error"))[:1800])
+            threading.Thread(target=w, daemon=True).start()
+            return
+        goal = arg[3:].strip() if sub.startswith("do ") else arg
+        if not goal:
+            self.reply("Tell me what to do, for example: godot do add a torch light to realm2/map1.tscn")
+            return
+        if not self._v77_gtoken():
+            self.reply("Not linked yet. Type: godot connect")
+            return
+        self.flash("Working on the Godot project...")
+        threading.Thread(target=self._v77_godot_agent, args=(goal,), daemon=True).start()
+
+    def _v77_godot_agent(self, goal):
+        sysm = ("You control a Godot 4 project through tools. Reply with ONE JSON object only. "
+                "To use a tool: {\"tool\": NAME, \"args\": {...}}. To finish: {\"final\": \"short answer for the user\"}. "
+                "Tools: project_info{}; list_files{dir,ext,limit}; read_file{path,offset,chars}; "
+                "write_file{path,content,overwrite}; create_scene{path,root_type,root_name}; scene_nodes{scene}; "
+                "add_node{scene,name,type,parent,props}; set_property{scene,node,prop,value}; "
+                "grep_search{query,dir,limit}; replace_in_file{path,old,new}; restore_backup{path}; tree{dir,depth}. "
+                "KNOWLEDGE: " + GODOT_KB78 + " "
+                "Paths are relative to the project root. GDScript files must be indented with TABS. "
+                "Read a file before you overwrite it. Do not claim something worked unless a tool result says ok. At most 10 steps.")
+        log = "GOAL: " + goal + "\n"
+        read_paths = set()
+        try:
+            for step in range(10):
+                raw = gemma_chat(sysm, log[-3500:], max_tokens=700, want_json=True, timeout=300)
+                try:
+                    obj = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+                except Exception:
+                    self._v77_say("Qwen gave an unusable reply: " + (raw or "")[:140])
+                    return
+                if "final" in obj:
+                    self._v77_say(str(obj["final"])[:900])
+                    return
+                tool = str(obj.get("tool") or "")
+                args = obj.get("args") if isinstance(obj.get("args"), dict) else {}
+                if tool == "read_file" and args.get("path"):
+                    read_paths.add(str(args["path"]))
+                if tool == "write_file" and args.get("overwrite") and str(args.get("path")) not in read_paths:
+                    args["overwrite"] = False
+                self._v77_flash("Godot: " + tool)
+                res = self._v77_gcall(tool, args)
+                log += "STEP %d CALL %s %s\nRESULT %s\n" % (step + 1, tool, json.dumps(args)[:300], json.dumps(res)[:1200])
+            self._v77_say("I stopped after 10 steps. Last result: " + log[-400:])
+        except Exception as e:
+            self.err("godot agent", e)
+            self._v77_say("The Godot helper failed: " + str(e)[:120])
+
+    def _v77_qrestart(self):
+        self.flash("Restarting Qwen (about 25 seconds)...")
+        def w():
+            self._v77_exec("bash ~/qrestart.sh", 25)
+            import time as _t
+            up = False
+            for i in range(40):
+                _t.sleep(2)
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2).read()
+                    up = True
+                    break
+                except Exception:
+                    pass
+            self._v77_say("Qwen is back up." if up else "Qwen did not answer yet. In Termux run: bash ~/qrestart.sh")
+        threading.Thread(target=w, daemon=True).start()
+
+    def _v77_open_gemini(self):
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            it = act.getPackageManager().getLaunchIntentForPackage("com.google.android.apps.bard")
+            if it is None:
+                Intent = autoclass("android.content.Intent")
+                Uri = autoclass("android.net.Uri")
+                it = Intent(Intent.ACTION_VIEW, Uri.parse("https://gemini.google.com/app"))
+            act.startActivity(it)
+        except Exception as e:
+            self.err("open gemini", e)
+            self.flash("Could not open Gemini.")
+
+    def _v77_local_eye_open(self):
+        self._v77_local_eye = True
+        try:
+            try:
+                self._vis_open()
+            except TypeError:
+                self._vis_open(None)
+        finally:
+            self._v77_local_eye = False
+
     def handle(self, text, voice=False):
         text = text.strip()
         if not text:
@@ -6557,6 +6829,12 @@ class BusinessDashboard(App):
             return
         if low == "execstatus":
             self._v72_bg("pwd && echo exec server ok")
+            return
+        if low == "godot" or low.startswith("godot ") or low.startswith("godot:"):
+            self._v77_godot(text)
+            return
+        if low in ("restart qwen", "qwen restart", "restart the server", "restart server"):
+            self._v77_qrestart()
             return
         if low in ("termuxperm", "termux perm", "termux status"):
             self._v73_perm()
@@ -6968,7 +7246,7 @@ class BusinessDashboard(App):
                     sp += "Known facts about the user: " + "; ".join(facts) + ". "
                 user = ("QUESTION: " + text + "\n\nWEB RESULTS:\n" + (ctx or "(no results)")
                         + (("\n\nTOP PAGE TEXT:\n" + page) if page else ""))
-                out = gemma_chat(sp, user[:6500], max_tokens=350, timeout=400)
+                out = gemma_chat(sp, user[:6500], max_tokens=350, timeout=400, role="talk")
             except Exception as e:
                 self.err("live answer", str(e)[:100])
             Clock.schedule_once(lambda dt: self.reply(out or "I could not search the web just now. Check the connection and that the Qwen server is running."), 0)
@@ -7000,7 +7278,7 @@ class BusinessDashboard(App):
                                     "chat_template_kwargs": {"enable_thinking": False}}).encode()
             bd = json.loads(body.decode())
             bd["stream"] = True
-            rq = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+            rq = urllib.request.Request(_v77_port("talk"),
                                         data=json.dumps(bd).encode(), headers={"Content-Type": "application/json"})
             acc = ""
             lastu = 0.0
